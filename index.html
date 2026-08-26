@@ -6,9 +6,45 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI 投资决策 Agent｜假设验证台</title>
+    <style>
+      #fp-gate{position:fixed;inset:0;z-index:99999;background:#0b1220;display:flex;align-items:center;justify-content:center;font-family:-apple-system,'PingFang SC',sans-serif}
+      #fp-gate .box{background:#111a2c;border:1px solid #1f2b42;border-radius:14px;padding:36px 30px;width:320px;box-shadow:0 12px 40px rgba(0,0,0,.4);text-align:center}
+      #fp-gate h1{font-size:20px;margin:0 0 6px;color:#f1f5f9}
+      #fp-gate p{font-size:13px;color:#8b9bb4;margin:0 0 18px}
+      #fp-gate input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #2a3a58;border-radius:9px;background:#0d1626;color:#e2e8f0;font-size:15px;outline:none}
+      #fp-gate input:focus{border-color:#3b82f6}
+      #fp-gate button{width:100%;margin-top:13px;padding:11px;border:0;border-radius:9px;background:#3b82f6;color:#fff;font-size:15px;cursor:pointer}
+      #fp-gate button:hover{background:#2563eb}
+      #fp-gate .err{color:#f87171;font-size:13px;margin-top:11px;min-height:18px}
+    </style>
   </head>
   <body>
+    <div id="fp-gate"><div class="box"><h1>🐧 Finance Penguin</h1><p>请输入访问密码</p>
+      <form id="fp-form" autocomplete="off"><input id="fp-pass" type="password" placeholder="访问密码" />
+      <button type="submit">进入</button></form><div class="err" id="fp-err"></div></div></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function(){
+        var HASH = "f00d0e94577089bd5d28080bb3d42c62e74c4527887909b2370e222835db6603";
+        var gate = document.getElementById("fp-gate");
+        var form = document.getElementById("fp-form");
+        var input = document.getElementById("fp-pass");
+        var err = document.getElementById("fp-err");
+        function unlock(){ if (gate) gate.style.display = "none"; }
+        try { if (sessionStorage.getItem("fp_unlocked") === "1") { unlock(); return; } } catch (e) {}
+        function hex(buf){ return Array.prototype.map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2,"0"); }).join(""); }
+        form.addEventListener("submit", function(e){
+          e.preventDefault();
+          var v = (input.value || "").trim();
+          if (!v) return;
+          if (!window.crypto || !window.crypto.subtle) { err.textContent = "当前浏览器不支持加密校验，请更换浏览器"; return; }
+          crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)).then(function(buf){
+            if (hex(buf) === HASH) { try { sessionStorage.setItem("fp_unlocked", "1"); } catch (e) {} unlock(); }
+            else { err.textContent = "密码错误，请重试"; input.value = ""; input.focus(); }
+          });
+        });
+      })();
+    </script>
   </body>
 </html>
