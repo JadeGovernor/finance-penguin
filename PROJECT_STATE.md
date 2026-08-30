@@ -13,6 +13,7 @@
 - [x] DeepSeek 真实分析：`deepseek-v4-flash` 经本地代理（`server/proxy.mjs`）调用，key 自动读取 OpenClaw auth 存储，不落前端/仓库（2026-08-30 验证：`/api/analyze` 返回完整结构化结果，含我的系统/五维评分/观察计划）
 - [x] 付费分层（演示）：免费版基础分析不限 + 组合体检/复盘共 10 次 + 单日超 100 次降智；专业版 29 元/月不限次（不真实扣费）
 - [x] 部署：main `fa84f4e` + gh-pages `2df57ee`
+- [x] 复盘管理：分类收纳（按月/日、可收起）、收藏置顶、重命名、删除 + 黑屏修复（2026-08-30 验证：lint/tsc/build 通过；本地 8787 与线上 gh-pages 均回归正常；main `7c29144`/`7d3e9e7`，gh-pages `2c2fe78`/`e50ec7a`，线上 bundle `index-B-S2WJRN.js`）
 - [ ] 录 1 分钟国创赛 demo 视频（用本地 http://127.0.0.1:8787 录制真实行情+真实 AI）
 - [ ] 线上 AI 代理（如需评委直接在线体验）：部署 serverless（Cloudflare/Vercel）并设置 `DEEPSEEK_API_KEY`
 
@@ -27,9 +28,10 @@
 - 模型会输出带尾逗号的漂亮 JSON：代理端做了容错解析（去围栏/注释/尾逗号）。
 - 静态托管无法持有 API key：线上页行情实时、AI 需本地代理；key 只经 `server/proxy.mjs`（env > .env.local > OpenClaw 存储）。
 - 免费行情：东财 push2 返回 `fltt=2` 时价格为小数；腾讯 `qt.gtimg.cn` 为 GBK 文本，回退时只取数字字段。
+- 复盘黑屏：新功能引用了未导入的图标（`Star`）→ 渲染时 ReferenceError 整页卸载；教训：改动后跑一遍「新增记录立即渲染」路径 + 全局 ErrorBoundary 兜底（`src/components/ErrorBoundary.tsx`）。
 
 ## 涉及文件与命令
-- `src/pages/HomePage.tsx`（主页面）；`src/lib/quotes.ts` / `ai.ts` / `plan.ts`；`server/proxy.mjs`
+- `src/pages/HomePage.tsx`（主页面）；`src/lib/quotes.ts` / `ai.ts` / `plan.ts` / `storage.ts`；`src/components/ErrorBoundary.tsx`；`server/proxy.mjs`
 - 演示：`npm run demo:build` → http://127.0.0.1:8787
 - 开发：`export PATH="$PWD/.tools/node/bin:$PATH" && npm run dev`（`/api` 代理到 8787）
 - 线上：https://jadegovernor.github.io/finance-penguin/

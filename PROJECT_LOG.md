@@ -20,3 +20,11 @@
   - 新增重命名（modal 输入，覆盖默认标题）；顺带修复默认标题笔误「中级宣传」→ 取留档文件名/类型名。
 - 验证：lint / tsc --noEmit / build 通过；本地 8787 与线上 gh-pages 均切到新 bundle `index-iF_vBlDe.js`。
 - 部署：main `7c29144`，gh-pages `2c2fe78`。
+
+### 2026-08-30 17:17
+- 修复「点击复盘教练黑屏」：根因是生成复盘后新增记录立即渲染历史列表时 `Star`（收藏图标）未从 lucide-react 导入 → `ReferenceError: Star is not defined`，React 整体卸载白屏（Vite dev + 临时 DebugBoundary 抓到真实堆栈）。
+- 新增全局 `ErrorBoundary`（`src/components/ErrorBoundary.tsx`，`main.tsx` 包裹），渲染异常不再白屏，改为「页面出了一点问题 + 重新加载」。
+- 顺带落地：`src/lib/storage.ts` localStorage 安全包装器（plan.ts / HomePage.tsx 改走 storageGet/Set/Remove）；`server/proxy.mjs` serveStatic 剥离 `/finance-penguin` 前缀、`/` 302 到 `/finance-penguin/`。
+- 验证：lint / tsc --noEmit / build 通过；本地 8787 全流程回归（生成复盘、收藏置顶、重命名、删除）正常；线上 gh-pages 已切新 bundle `index-B-S2WJRN.js`。
+- 部署：main `7d3e9e7`，gh-pages `e50ec7a`。
+- 提醒：浏览器旧链接是残缺的 `https://jadegovernor.github.io/finance-penguin/（密码`，请用干净链接 `https://jadegovernor.github.io/finance-penguin/`。
