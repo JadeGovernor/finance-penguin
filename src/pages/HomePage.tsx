@@ -451,7 +451,7 @@ export default function HomePage() {
       if (isStockMode) {
         setLoadingLabel('正在识别股票…')
         const resolved = await resolveStock(text)
-        if (!resolved?.code) { setError('未识别出对应股票，请确认名称或输入 6 位股票代码。'); return }
+        if (!resolved?.code) { setError(`未能识别「${text}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。`); return }
         targetStock = resolved
         setLoadingLabel('正在获取实时行情…')
         let quoteResult: Record<string, Quote> = {}

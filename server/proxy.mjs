@@ -202,25 +202,29 @@ async function resolveWithDeepSeek(key, text) {
     { role: 'system', content: '你是 A 股股票识别器。把用户输入解析为一只 A 股股票，可纠正明显错别字（例如「绿地谐波」→「绿的谐波」）。只输出紧凑 JSON：{"code":"688017.SH","name":"绿的谐波"}；无法确定时输出 {"code":"","name":""}。' },
     { role: 'user', content: `用户输入：${text}` },
   ]
-  const payload = { model: MODEL, messages, temperature: 0, max_tokens: 300, response_format: { type: 'json_object' } }
-  let res = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(payload),
-  })
-  if (res.status === 400) {
-    delete payload.response_format
-    res = await fetch('https://api.deepseek.com/chat/completions', {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const payload = { model: MODEL, messages, temperature: 0, max_tokens: 300, response_format: { type: 'json_object' } }
+    let res = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(payload),
     })
+    if (res.status === 400) {
+      delete payload.response_format
+      res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(payload),
+      })
+    }
+    if (!res.ok) continue
+    const data = await res.json()
+    const parsed = extractJson(data?.choices?.[0]?.message?.content || '')
+    if (parsed && /^\d{6}\.(SH|SZ|BJ)$/.test(String(parsed.code || ''))) {
+      return { code: String(parsed.code), name: String(parsed.name || text.trim()), market: String(parsed.code).slice(-2) }
+    }
   }
-  if (!res.ok) return null
-  const data = await res.json()
-  const parsed = extractJson(data?.choices?.[0]?.message?.content || '')
-  if (!parsed || !/^\d{6}\.(SH|SZ|BJ)$/.test(String(parsed.code || ''))) return null
-  return { code: String(parsed.code), name: String(parsed.name || text.trim()), market: String(parsed.code).slice(-2) }
+  return null
 }
 
 async function handleResolve(req, res) {
@@ -232,20 +236,22 @@ async function handleResolve(req, res) {
   const direct = parseDirectCode(input)
   if (direct) return json(res, 200, { ...direct, source: 'direct' })
 
-  try {
-    const em = await resolveFromEastmoney(input)
-    if (em) return json(res, 200, { ...em, source: 'eastmoney' })
-  } catch { /* 继续尝试 DeepSeek */ }
-
+  // AI 判断优先：能纠正错别字、识别模糊名称（如「绿地谐波」→「绿的谐波 688017.SH」）
   const key = resolveDeepSeekKey()
   if (key) {
     try {
       const ds = await resolveWithDeepSeek(key, input)
       if (ds) return json(res, 200, { ...ds, source: 'deepseek' })
-    } catch { /* 落入未识别 */ }
+    } catch { /* 继续机器兜底 */ }
   }
 
-  return json(res, 404, { error: '未识别出对应股票，请确认名称或输入 6 位股票代码。' })
+  // 机器识别兜底：AI 不可用或失败时，用东财 suggest 处理标准名称/拼音/代码
+  try {
+    const em = await resolveFromEastmoney(input)
+    if (em) return json(res, 200, { ...em, source: 'eastmoney' })
+  } catch { /* 落入未识别 */ }
+
+  return json(res, 404, { error: `未能识别「${input.trim()}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。` })
 }
 
 function serveStatic(req, res) {
