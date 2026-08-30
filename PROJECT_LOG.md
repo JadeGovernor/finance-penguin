@@ -1,8 +1,14 @@
 # Finance Penguin 项目日志
 
 ### 2026-08-30 16:00
-- 归档旧 Codex 任务（`01a03e59…`）：因历史消息损坏，所有请求报 `messages[1]: content should be a string or a list`，任务 `systemError` 无法恢复；工作转移到新对话继续。
-- 暂停「Finance Penguin 密码门上线监控」heartbeat：`fp-gate` 已出现 11 次、Pages 构建 `built`，监控目标达成。
-- 验证线上页面：HTTP 200，密码门在线（密码 CHEZHI）。
-- 初始化本项目的 `PROJECT_STATE.md` / `PROJECT_LOG.md`（此前无状态文件）。
-- 下一步：为 1 分钟国创赛 demo 视频定脚本并录制。
+- 归档旧 Codex 任务（`01a03e59…`）：历史消息损坏（API invalid_request_error）systemError 无法恢复；工作转移到新对话。
+- 暂停「密码门上线监控」heartbeat（fp-gate ×11、Pages built，目标达成）；初始化项目状态文件。
+
+### 2026-08-30 16:40
+- 接入真实行情：东财 push2（CORS 放行）+ 腾讯兜底，页面进入与「最新行情 · 重置」自动抓取；候选卡片显示实时价格/涨跌幅。
+- 接入真实 AI：`deepseek-v4-flash` 经本地代理 `server/proxy.mjs`（端口 8787，静态托管 dist + `/api/analyze`），key 自动从 OpenClaw auth 存储读取，不落前端/仓库。
+- 付费分层（演示）：免费版基础分析不限、组合体检+复盘共 10 次、单日超 100 次降智；专业版 29 元/月不限次；顶栏会员入口 + 定价弹窗。
+- 踩坑：v4-flash 推理 token 占用正文预算（正文被截断）→ max_tokens 提到 10000/3000；模型输出带尾逗号 JSON → 代理容错解析。
+- 验证：`npm run lint`/`build`/`tsc --noEmit` 通过；`/api/analyze` 返回完整结构化结果（9761 tokens/次）；线上 gh-pages 已切新 bundle。
+- 部署：main `fa84f4e`，gh-pages `2df57ee`（含 `.nojekyll`）。
+- 遗留：线上静态页 AI 需本地代理，未部署 serverless 代理；DeepSeek 余额 ¥20.95，v4-flash 推理模式单次约 1 万 token，注意用量。

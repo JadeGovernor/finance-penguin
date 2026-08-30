@@ -1,37 +1,41 @@
-# 项目：Finance Penguin（AI 投资决策 Agent V0.2）
+# 项目：Finance Penguin（AI 投资决策 Agent V0.2 → 真实数据接入版）
 
 ## 最后更新
 2026-08-30
 
 ## 目标（一句话）
-把个人投资者的模糊判断变成可验证假设，用多方委员会检验风险、留档复盘沉淀决策纪律的 AI 投研训练原型（国创赛参赛项目）。
+把个人投资者的模糊判断变成可验证假设，用多方委员会检验风险、留档复盘沉淀决策纪律的 AI 投研训练工具（国创赛参赛项目）。
 
 ## 当前进度
-- [x] V0.2 源码初始化（2026-08-25 验证：git commit `6a2d010`）
-- [x] 访问密码门 + PRD（2026-08-26 验证：git commit `502c4ea`）
-- [x] GitHub Pages 上线（2026-08-30 验证：`gh api .../pages/builds/latest` → `built`；curl 线上 HTTP 200，标题「AI 投资决策 Agent｜假设验证台」，密码门 `fp-gate` × 11，密码 CHEZHI）
-- [x] 功能闭环：分析助手五步流程 / 我的交易系统 / 留档 / 组合体检 / 复盘教练（Mock 数据，localStorage 持久化）
-- [x] 密码门上线监控达成（2026-08-30 验证：fp-gate > 0；heartbeat 已暂停）
-- [ ] 录 1 分钟国创赛 demo 视频
-- [ ] 一期迭代细节完善（视评委反馈）
+- [x] V0.2 源码初始化 + 密码门 + PRD（git `6a2d010` / `502c4ea`）
+- [x] GitHub Pages 部署（验证：`gh api .../pages/builds` → `built`；线上新 bundle `index-CtK6EVUU.js`，密码 CHEZHI）
+- [x] 实时行情接入：东财 push2 直连（CORS 放行）+ 腾讯兜底；页面进入与「最新行情 · 重置」均重新抓取（2026-08-30 验证：curl 东财 ulist 返回 8 只真实价格）
+- [x] DeepSeek 真实分析：`deepseek-v4-flash` 经本地代理（`server/proxy.mjs`）调用，key 自动读取 OpenClaw auth 存储，不落前端/仓库（2026-08-30 验证：`/api/analyze` 返回完整结构化结果，含我的系统/五维评分/观察计划）
+- [x] 付费分层（演示）：免费版基础分析不限 + 组合体检/复盘共 10 次 + 单日超 100 次降智；专业版 29 元/月不限次（不真实扣费）
+- [x] 部署：main `fa84f4e` + gh-pages `2df57ee`
+- [ ] 录 1 分钟国创赛 demo 视频（用本地 http://127.0.0.1:8787 录制真实行情+真实 AI）
+- [ ] 线上 AI 代理（如需评委直接在线体验）：部署 serverless（Cloudflare/Vercel）并设置 `DEEPSEEK_API_KEY`
 
 ## 下一步
-1. 按脚本录制 1 分钟演示视频（推荐路径：输入观点 → 验证标的 → 多方委员会 → 综合判断 → 观察计划 → 留档）
-2. 准备问答口径：产品定位 / 数据边界（Mock）/ 商业模式（订阅制）
-3. 二期规划：接入真实盘后数据（AKShare / Tushare）
+1. 按脚本录制 1 分钟演示视频（输入观点 → 验证标的 → 多方委员会 → 综合判断 → 观察计划 → 留档，含免费版配额/升级弹窗演示）
+2. 视评委反馈完善一期细节；准备问答口径（数据边界、定价、合规）
+3. 二期：真实账号体系（Kuaishou/Appwrite）、微信/支付宝订阅、云端存档
 
 ## 关键决策 / 踩坑
-- 旧 Codex 任务（`01a03e59…`）因历史消息损坏（API `invalid_request_error`）进入 `systemError`，无法恢复，已归档；工作转移到新对话，本文件即为交接依据。
-- 页面有密码门（密码 CHEZHI），非公开可见；监控已完成使命。
-- 全部数据为 Mock 盘后快照，不得描述为实时行情（项目 AGENTS.md 硬约束）。
-- 依赖安装必须用内部源 `https://npm.corp.kuaishou.com/`。
+- 旧 Codex 任务 `01a03e59…` 因历史消息损坏 systemError，已归档；本文件为交接依据。
+- `deepseek-v4-flash` 是推理模型：`reasoning_content` 与正文共用 max_tokens，预算需给足（normal 10000 / 降智 3000），否则正文被截断。
+- 模型会输出带尾逗号的漂亮 JSON：代理端做了容错解析（去围栏/注释/尾逗号）。
+- 静态托管无法持有 API key：线上页行情实时、AI 需本地代理；key 只经 `server/proxy.mjs`（env > .env.local > OpenClaw 存储）。
+- 免费行情：东财 push2 返回 `fltt=2` 时价格为小数；腾讯 `qt.gtimg.cn` 为 GBK 文本，回退时只取数字字段。
 
 ## 涉及文件与命令
-- `src/pages/HomePage.tsx`（唯一主页面，含分析/组合/复盘/留档四模块）
-- 启动/检查：`cd "finance penguin" && export PATH="$PWD/.tools/node/bin:$PATH" && npm run dev`（`lint` / `build`）
-- 线上地址：https://jadegovernor.github.io/finance-penguin/
+- `src/pages/HomePage.tsx`（主页面）；`src/lib/quotes.ts` / `ai.ts` / `plan.ts`；`server/proxy.mjs`
+- 演示：`npm run demo:build` → http://127.0.0.1:8787
+- 开发：`export PATH="$PWD/.tools/node/bin:$PATH" && npm run dev`（`/api` 代理到 8787）
+- 线上：https://jadegovernor.github.io/finance-penguin/
 
 ## 验收标准 / 验证方式
-- `npm run build` 与 `npm run lint` 必须成功
-- 页面无白屏、无 JS 报错，覆盖启用/未启用交易系统两条分析路径
-- 刷新后交易规则、留档、组合、复盘仍存在（localStorage 持久化）
+- `npm run lint` / `npm run build` / `npx tsc --noEmit` 全通过
+- 页面进入与重置均触发真实行情抓取；分析为 DeepSeek 真实生成
+- 免费版 10 次配额耗尽弹出定价窗口；开通专业版后不限次
+- 刷新后交易规则、留档、组合、复盘仍存在（localStorage）
