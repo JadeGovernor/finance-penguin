@@ -28,3 +28,14 @@
 - 验证：lint / tsc --noEmit / build 通过；本地 8787 全流程回归（生成复盘、收藏置顶、重命名、删除）正常；线上 gh-pages 已切新 bundle `index-B-S2WJRN.js`。
 - 部署：main `7d3e9e7`，gh-pages `e50ec7a`。
 - 提醒：浏览器旧链接是残缺的 `https://jadegovernor.github.io/finance-penguin/（密码`，请用干净链接 `https://jadegovernor.github.io/finance-penguin/`。
+
+### 2026-08-30 18:10
+- 个股分析真实能力修复（用户反馈：输入个股名被拦「请补充观点、方向和时间」；分析 demo 外股票报错）：
+  - 根因①：个股输入校验 `<8 字符` 拦截只输股票名的用户；根因②：行情快照只含 demo 股票，prompt 禁止选快照外标的 → 模型返回空 candidates → 前端 `candidates[0]` 为 undefined 崩溃。
+  - 新增 `/api/resolve`：解析顺序 = 6 位代码/带后缀 → 东财 searchapi type=14（中文名/拼音/代码）→ DeepSeek 轻量纠正错别字（「绿地谐波」→「绿的谐波 688017.SH」）→ 全部失败明确提示。
+  - 个股交互：校验放宽为 ≥2 字符直接分析；输入框提示「输入股票名称或 6 位代码」；新增可折叠选填区「补充你的判断/方向/时间（可选）」；「Mock 行情」标注改为「东财 + 腾讯实时行情」。
+  - 分析流程：先 resolve 目标股 → 抓真实行情进快照（严格模式：抓不到则中止并提示）→ `targetStock` 注入 prompt（规则：必须含目标股、价格用快照真实值、禁止虚构）→ 候选不含目标股时友好报错不崩溃。
+  - 后端健壮性：extractJson 失败自动重试一次（DeepSeek 偶发输出格式异常）。
+- 验证：lint / tsc / build 通过；浏览器端到端「绿地谐波」全流程成功（纠正 688017.SH → 委员会分析 → 综合判断 62 分，标注 17:41 实时行情）；市场观点模式回归候选卡片显示真实价（中际旭创 ¥858.35 等）；`/api/resolve` 六种输入（代码/后缀/中文名/拼音/错别字/无效）均符合预期。
+- 部署：main `0c2b433`，gh-pages `ec86df2`（线上 bundle `index-CIcdfZH2.js`）。
+- 遗留：线上 gh-pages 无本地代理，AI 分析/股票解析需本机 127.0.0.1:8787（行情仍实时）。
