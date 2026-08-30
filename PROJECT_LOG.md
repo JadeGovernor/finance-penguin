@@ -12,3 +12,11 @@
 - 验证：`npm run lint`/`build`/`tsc --noEmit` 通过；`/api/analyze` 返回完整结构化结果（9761 tokens/次）；线上 gh-pages 已切新 bundle。
 - 部署：main `fa84f4e`，gh-pages `2df57ee`（含 `.nojekyll`）。
 - 遗留：线上静态页 AI 需本地代理，未部署 serverless 代理；DeepSeek 余额 ¥20.95，v4-flash 推理模式单次约 1 万 token，注意用量。
+
+### 2026-08-30 17:20
+- 复盘管理改造（用户反馈：复盘删不掉、堆积）：
+  - 新增删除（此前复盘列表没有删除入口）；新增收藏置顶（置顶区置于最上）。
+  - 历史复盘按月收纳、组内按日细分，月份标题可点击收起/展开（缩进层级）。
+  - 新增重命名（modal 输入，覆盖默认标题）；顺带修复默认标题笔误「中级宣传」→ 取留档文件名/类型名。
+- 验证：lint / tsc --noEmit / build 通过；本地 8787 与线上 gh-pages 均切到新 bundle `index-iF_vBlDe.js`。
+- 部署：main `7c29144`，gh-pages `2c2fe78`。
