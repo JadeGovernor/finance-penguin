@@ -8,6 +8,7 @@ import {
 
 import { fetchQuotes, type Quote } from '@/lib/quotes'
 import { runAnalysis, type AnalysisResult, type AnalysisMember } from '@/lib/ai'
+import { resolveStock } from '@/lib/resolve'
 import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, FREE_DEGRADE_AFTER, type PlanState } from '@/lib/plan'
 import { storageGet, storageSet, storageRemove } from '@/lib/storage'
 
@@ -184,8 +185,10 @@ function ActionBlock({ title, icon: Icon, items, tone = '' }: { title: string; i
 export default function HomePage() {
   const [mode, setMode] = useState<EntryMode>('thesis')
   const [query, setQuery] = useState(themeScenario.input)
+  const [extraNote, setExtraNote] = useState('')
   const [stage, setStage] = useState<Stage>('input')
   const [loading, setLoading] = useState(false)
+  const [loadingLabel, setLoadingLabel] = useState('分析中')
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Candidate | null>(null)
   const [committeeTick, setCommitteeTick] = useState(-1)
@@ -401,6 +404,7 @@ export default function HomePage() {
   const switchMode = (nextMode: EntryMode) => {
     setMode(nextMode)
     setQuery(nextMode === 'thesis' ? themeScenario.input : stockScenario.input)
+    setExtraNote('')
     setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null)
   }
 
@@ -428,7 +432,10 @@ export default function HomePage() {
   }
 
   const discover = async () => {
-    if (query.trim().length < 8) {
+    const text = query.trim()
+    if (isStockMode) {
+      if (text.length < 2) { setError('请输入股票名称或 6 位代码。'); return }
+    } else if (text.length < 8) {
       setError('请补充观点、方向和时间。')
       return
     }
@@ -437,10 +444,40 @@ export default function HomePage() {
       const tracked = trackAnalysis(plan)
       setPlan(tracked.plan)
       if (tracked.count === FREE_DEGRADE_AFTER + 1) setToast('今日免费请求已超过 100 次，已启用降智模式')
-      const result = await runAnalysis({ input: query, mode, tradingSystem: tradingSystem?.text, quotes: Object.values(quotes), degraded: tracked.degraded })
+
+      let targetStock: { code: string; name: string; price?: number; changePct?: number } | undefined
+      let analyzeInput = text
+      let snapshotQuotes: Quote[] = Object.values(quotes)
+      if (isStockMode) {
+        setLoadingLabel('正在识别股票…')
+        const resolved = await resolveStock(text)
+        if (!resolved?.code) { setError('未识别出对应股票，请确认名称或输入 6 位股票代码。'); return }
+        targetStock = resolved
+        setLoadingLabel('正在获取实时行情…')
+        let quoteResult: Record<string, Quote> = {}
+        try { quoteResult = await fetchQuotes([resolved.code]) } catch { /* 按未获取处理 */ }
+        const quote = quoteResult[resolved.code]
+        if (!quote) { setError(`未获取到 ${resolved.name} 的实时行情，请确认代码后重试。`); return }
+        setQuotes((prev) => ({ ...prev, ...quoteResult }))
+        setQuotesAt(Date.now())
+        snapshotQuotes = [...Object.values(quotes), quote]
+        const note = extraNote.trim()
+        analyzeInput = note ? `个股：${resolved.name}（${resolved.code}）。补充判断：${note}` : `个股：${resolved.name}（${resolved.code}）`
+      }
+
+      setLoadingLabel('AI 分析中…')
+      const result = await runAnalysis({ input: analyzeInput, mode, tradingSystem: tradingSystem?.text, quotes: snapshotQuotes, degraded: tracked.degraded, targetStock })
       setLive(result)
       if (result.candidates.length) loadQuotes(result.candidates.map((c) => c.code))
-      if (isStockMode) { startCommittee(result.candidates[0]); return }
+      if (isStockMode) {
+        const target = result.candidates.find((c) => c.code === targetStock?.code)
+        if (!result.candidates.length || !target) {
+          setError('本次未生成有效候选标的，请重试。')
+          return
+        }
+        startCommittee(target)
+        return
+      }
       setStage('candidates')
       window.setTimeout(() => document.querySelector('#candidates')?.scrollIntoView({ behavior: 'smooth' }), 30)
     } catch (err) {
@@ -633,11 +670,12 @@ export default function HomePage() {
       <section className="panel input-panel">
         <div className="section-head"><div><span className="section-no">01 / 输入观点</span><h2>您想了解什么？</h2></div><Pill tone="success">沪深京 A 股</Pill></div>
         <div className="mode-tabs" role="tablist"><button className={mode === 'thesis' ? 'active' : ''} onClick={() => switchMode('thesis')}><BrainCircuit size={16}/>市场观点</button><button className={mode === 'stock' ? 'active' : ''} onClick={() => switchMode('stock')}><Search size={16}/>指定个股</button></div>
-        <label htmlFor="query">{mode === 'thesis' ? '输入行业、主题、政策或事件判断' : '输入证券代码、简称或对个股的判断'}</label>
+        <label htmlFor="query">{mode === 'thesis' ? '输入行业、主题、政策或事件判断' : '输入股票名称或 6 位代码（如：绿的谐波 / 688017）'}</label>
         <textarea id="query" value={query} onChange={(event) => setQuery(event.target.value)} aria-invalid={Boolean(error)} />
+        {isStockMode && <details className="stock-extra"><summary>补充你的判断 / 方向 / 时间（可选）</summary><textarea id="stock-extra-note" value={extraNote} onChange={(event) => setExtraNote(event.target.value)} placeholder="例如：关注机器人减速器赛道，未来一周观察回踩支撑后的承接力度" rows={2}/></details>}
         {error && <div className="error"><AlertTriangle size={16}/><span>{error}</span></div>}
         <div className="input-examples"><span>切换示例</span><button onClick={() => switchMode('thesis')}>AI 基础设施资本开支</button><button onClick={() => switchMode('stock')}>贵州茅台一周修复</button></div>
-        <div className="input-footer"><span><Info size={14}/>Mock 行情</span><button className="btn primary discover-btn" disabled={loading} onClick={discover}>{loading ? <><RefreshCw className="spin" size={16}/>分析中</> : <><Search size={16}/>{isStockMode ? '开始分析' : '发现标的'}</>}</button></div>
+        <div className="input-footer"><span><Info size={14}/>东财 + 腾讯实时行情</span><button className="btn primary discover-btn" disabled={loading} onClick={discover}>{loading ? <><RefreshCw className="spin" size={16}/>{loadingLabel}</> : <><Search size={16}/>{isStockMode ? '开始分析' : '发现标的'}</>}</button></div>
       </section>
 
       {stage !== 'input' && <section className="interpretation"><div className="interpret-title"><BadgeCheck size={17}/>您的观点概览</div><div className="interpret-grid">{Object.entries(scenario.interpretation).map(([key, value]) => <div key={key}><span>{{ subject: '关注方向', direction: '您的判断', horizon: '关注周期', catalyst: '潜在催化', unknown: '待确认信息' }[key]}</span><strong>{value}</strong></div>)}</div></section>}

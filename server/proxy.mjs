@@ -65,7 +65,7 @@ const SYSTEM_PROMPT = `你是「Finance Penguin」A 股投研假设验证台的�
 必须遵守的产品规则：
 1. 不荐股、不下买卖指令、不承诺收益；所有结论表示"值得跟踪的程度"，评分不是上涨概率。
 2. 明确数据边界：行情为真实实时快照（附抓取时间）；财报/消息类信息只使用公开常识，缺少数据时如实说明，不得编造具体数字、订单或公告。
-3. 验证标的：优先从"实时行情"给出的股票中挑选 2~3 只；指定个股模式必须包含目标股票，再加 1~2 只对照。price 与 change 必须使用行情快照真实数值；快照里没有的标的不要选。
+3. 验证标的：候选只能从"实时行情快照"给出的股票中挑选 2~3 只；指定个股模式必须包含用户指定的目标股票（其真实行情已在快照中），再加 1~2 只对照；若快照中没有目标股票则输出空 candidates。禁止虚构快照中不存在的股票、代码或价格；price 与 change 必须使用行情快照真实数值。
 4. 多方委员会：乐观研究员、悲观研究员、风控委员、裁决官四个视角；若用户提供交易系统，额外加入"我的系统"视角（key 为 system）。每个视角包含 summary、conclusion、analysis(3 条)、basis、evidence、gap。
 5. 五维评分：逻辑强度、证据完整度、兑现程度、市场拥挤度、风险可控度（0-100，help 一句话）。
 6. 一周观察计划：entryPrice 触发观察价、stopPrice 失效复核价、takeRange 兑现区间字符串、initialPosition 首次仓位（默认 5%）、maxPosition（默认 10%）；focus/satisfy/reduce/cancel/pending 各 2~3 条。价格必须基于行情快照真实价格推算；marketNote 写"基于 YYYY-MM-DD HH:MM 实时行情，非投资建议"。
@@ -76,11 +76,12 @@ const SYSTEM_PROMPT = `你是「Finance Penguin」A 股投研假设验证台的�
 输出 JSON 结构：
 {"interpretation":{"subject":"","direction":"","horizon":"","catalyst":"","unknown":""},"strategy":"","candidates":[{"code":"600519.SH","name":"","role":"","tags":[],"reason":"","difference":"","doubt":"","price":0,"change":0,"score":0}],"members":[{"key":"bull","label":"乐观研究员","tone":"positive","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[{"id":"E-01","name":"","date":"","url":""}],"gap":""},{"key":"bear","label":"悲观研究员","tone":"negative","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"risk","label":"风控委员","tone":"warning","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"judge","label":"裁决官","tone":"accent","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""}],"scores":[{"label":"逻辑强度","value":0,"help":""},{"label":"证据完整度","value":0,"help":""},{"label":"兑现程度","value":0,"help":""},{"label":"市场拥挤度","value":0,"help":""},{"label":"风险可控度","value":0,"help":""}],"verdict":{"title":"","conclusion":"","score":0,"deduction":""},"plan":{"entryPrice":0,"stopPrice":0,"takeRange":"","initialPosition":"5%","maxPosition":"10%","focus":[],"satisfy":[],"reduce":[],"cancel":[],"pending":[]},"marketNote":""}`
 
-function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded }) {
+function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock }) {
   const lines = [
     `用户输入（${mode === 'stock' ? '指定个股' : '市场观点'}）：${input}`,
   ]
   if (tradingSystem) lines.push(`用户保存的交易系统原文：${tradingSystem}`)
+  if (targetStock?.code) lines.push(`指定个股（已解析，其行情已含于下方快照）：${targetStock.name}（${targetStock.code}）`)
   lines.push(`实时行情快照（JSON）：${JSON.stringify(quotes || [])}`)
   lines.push(`当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`)
   if (degraded) lines.push('当前处于降智模式：请使用更精炼的语言，每条结论不超过 2 句话，减少篇幅。')
@@ -132,12 +133,12 @@ async function handleAnalyze(req, res) {
   }
   let body
   try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
-  const { input, mode, tradingSystem, quotes, degraded } = body || {}
+  const { input, mode, tradingSystem, quotes, degraded, targetStock } = body || {}
   if (!input || typeof input !== 'string' || input.trim().length < 4) return json(res, 400, { error: '缺少输入内容' })
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded }) },
+    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock }) },
   ]
   try {
     const { res: upstream, data } = await callDeepSeek(key, messages, Boolean(degraded))
@@ -146,14 +147,105 @@ async function handleAnalyze(req, res) {
       return json(res, 502, { error: `DeepSeek 接口错误（${upstream.status}）：${data?.error?.message || '未知错误，请重试'}` })
     }
     const content = data?.choices?.[0]?.message?.content || ''
-    const parsed = extractJson(content)
-    if (!parsed) return json(res, 502, { error: 'AI 返回内容无法解析为 JSON，请重试。', raw: content.slice(0, 2000) })
+    let parsed = extractJson(content)
+    if (!parsed) {
+      // DeepSeek 偶发输出格式异常：同参数自动重试一次
+      const retry = await callDeepSeek(key, messages, Boolean(degraded))
+      if (retry.res.ok) {
+        const retryContent = retry.data?.choices?.[0]?.message?.content || ''
+        parsed = extractJson(retryContent)
+        if (parsed) {
+          console.log(`[analyze] ok (retry) · model=${retry.data?.model || MODEL} · degraded=${Boolean(degraded)} · tokens=${retry.data?.usage?.total_tokens ?? '?'}`)
+          return json(res, 200, { result: parsed, model: retry.data?.model || MODEL })
+        }
+      }
+      return json(res, 502, { error: 'AI 返回内容无法解析为 JSON，请重试。', raw: content.slice(0, 2000) })
+    }
     console.log(`[analyze] ok · model=${data?.model || MODEL} · degraded=${Boolean(degraded)} · tokens=${data?.usage?.total_tokens ?? '?'}`)
     return json(res, 200, { result: parsed, model: data?.model || MODEL })
   } catch (err) {
     console.error('[analyze] upstream error:', err.message)
     return json(res, 502, { error: `AI 服务调用失败：${err.message}` })
   }
+}
+
+function normalizeSix(code) {
+  if (/^[68]/.test(code)) return `${code}.SH`
+  if (/^[49]/.test(code)) return `${code}.BJ`
+  return `${code}.SZ`
+}
+
+function parseDirectCode(text) {
+  const clean = text.trim().toUpperCase()
+  const m = clean.match(/^(\d{6})(?:\.(SH|SZ|BJ))?$/)
+  if (!m) return null
+  return { code: m[2] ? `${m[1]}.${m[2]}` : normalizeSix(m[1]), name: text.trim() }
+}
+
+async function resolveFromEastmoney(text) {
+  const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(text.trim())}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=8`
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://quote.eastmoney.com/' } })
+  if (!res.ok) return null
+  const json = await res.json()
+  const list = json?.QuotationCodeTable?.Data ?? []
+  for (const item of list) {
+    const m = String(item.QuoteID || '').match(/^(\d)\.(\d{6})$/)
+    if (!m) continue
+    const market = m[1] === '1' ? 'SH' : m[1] === '0' ? 'SZ' : 'BJ'
+    return { code: `${m[2]}.${market}`, name: item.Name || text.trim(), market }
+  }
+  return null
+}
+
+async function resolveWithDeepSeek(key, text) {
+  const messages = [
+    { role: 'system', content: '你是 A 股股票识别器。把用户输入解析为一只 A 股股票，可纠正明显错别字（例如「绿地谐波」→「绿的谐波」）。只输出紧凑 JSON：{"code":"688017.SH","name":"绿的谐波"}；无法确定时输出 {"code":"","name":""}。' },
+    { role: 'user', content: `用户输入：${text}` },
+  ]
+  const payload = { model: MODEL, messages, temperature: 0, max_tokens: 300, response_format: { type: 'json_object' } }
+  let res = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify(payload),
+  })
+  if (res.status === 400) {
+    delete payload.response_format
+    res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(payload),
+    })
+  }
+  if (!res.ok) return null
+  const data = await res.json()
+  const parsed = extractJson(data?.choices?.[0]?.message?.content || '')
+  if (!parsed || !/^\d{6}\.(SH|SZ|BJ)$/.test(String(parsed.code || ''))) return null
+  return { code: String(parsed.code), name: String(parsed.name || text.trim()), market: String(parsed.code).slice(-2) }
+}
+
+async function handleResolve(req, res) {
+  let body
+  try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
+  const { input } = body || {}
+  if (!input || typeof input !== 'string' || !input.trim()) return json(res, 400, { error: '缺少输入内容' })
+
+  const direct = parseDirectCode(input)
+  if (direct) return json(res, 200, { ...direct, source: 'direct' })
+
+  try {
+    const em = await resolveFromEastmoney(input)
+    if (em) return json(res, 200, { ...em, source: 'eastmoney' })
+  } catch { /* 继续尝试 DeepSeek */ }
+
+  const key = resolveDeepSeekKey()
+  if (key) {
+    try {
+      const ds = await resolveWithDeepSeek(key, input)
+      if (ds) return json(res, 200, { ...ds, source: 'deepseek' })
+    } catch { /* 落入未识别 */ }
+  }
+
+  return json(res, 404, { error: '未识别出对应股票，请确认名称或输入 6 位股票代码。' })
 }
 
 function serveStatic(req, res) {
@@ -177,6 +269,7 @@ const server = http.createServer((req, res) => {
     return json(res, 200, { ok: true, model: MODEL, keyConfigured: Boolean(resolveDeepSeekKey()), dist: existsSync(join(DIST, 'index.html')) })
   }
   if (url.pathname === '/api/analyze' && req.method === 'POST') return handleAnalyze(req, res)
+  if (url.pathname === '/api/resolve' && req.method === 'POST') return handleResolve(req, res)
   if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' })
   if (url.pathname === '/' || url.pathname === '') {
     res.writeHead(302, { Location: '/finance-penguin/' })

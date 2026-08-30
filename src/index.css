@@ -45,3 +45,5 @@
 .rename-input{width:100%;min-height:auto;padding:10px 12px;font-size:13px}
 @media(hover:none){.review-record-actions{opacity:1}}
 @media(max-width:767px){.review-record-main{padding-right:11px}.review-record-actions{position:static;opacity:1;justify-content:flex-end;padding:0 8px 8px}.review-record-actions .icon-btn{min-height:34px}}
+
+.stock-extra{margin-top:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:7px}.stock-extra summary{cursor:pointer;color:var(--muted);font-size:10px;font-weight:650;letter-spacing:.04em}.stock-extra summary:hover{color:var(--primary)}.stock-extra textarea{min-height:64px;margin-top:9px;padding:11px;font-size:12px}
