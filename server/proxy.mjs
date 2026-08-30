@@ -157,8 +157,12 @@ async function handleAnalyze(req, res) {
 }
 
 function serveStatic(req, res) {
+  // 站点 base 为 /finance-penguin/：本地演示也按该前缀提供服务
   const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
-  let filePath = normalize(join(DIST, urlPath === '/' ? 'index.html' : urlPath))
+  let clean = urlPath
+  if (clean === '/finance-penguin' || clean === '/finance-penguin/') clean = '/'
+  else if (clean.startsWith('/finance-penguin/')) clean = clean.slice('/finance-penguin'.length)
+  let filePath = normalize(join(DIST, clean === '/' ? 'index.html' : clean))
   if (!filePath.startsWith(DIST)) filePath = join(DIST, 'index.html')
   if (!existsSync(filePath) || statSync(filePath).isDirectory()) filePath = join(DIST, 'index.html')
   const ext = extname(filePath).toLowerCase()
@@ -174,6 +178,10 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/api/analyze' && req.method === 'POST') return handleAnalyze(req, res)
   if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' })
+  if (url.pathname === '/' || url.pathname === '') {
+    res.writeHead(302, { Location: '/finance-penguin/' })
+    return res.end()
+  }
   return serveStatic(req, res)
 })
 

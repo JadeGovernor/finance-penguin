@@ -3,12 +3,13 @@ import {
   AlertTriangle, Archive, BadgeCheck, BrainCircuit, CalendarClock,
   Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, ClipboardCheck, Clock3, Database, FileSearch, FileText,
   FolderOpen, Gavel, Info, Layers3, Menu, Pencil, PieChart, Plus, RefreshCw, Scale, Search, ShieldCheck,
-  ShieldQuestion, Target, Trash2, TrendingDown, TrendingUp, X,
+  ShieldQuestion, Star, Target, Trash2, TrendingDown, TrendingUp, X,
 } from 'lucide-react'
 
 import { fetchQuotes, type Quote } from '@/lib/quotes'
 import { runAnalysis, type AnalysisResult, type AnalysisMember } from '@/lib/ai'
 import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, FREE_DEGRADE_AFTER, type PlanState } from '@/lib/plan'
+import { storageGet, storageSet, storageRemove } from '@/lib/storage'
 
 type EntryMode = 'thesis' | 'stock'
 type Stage = 'input' | 'candidates' | 'committee' | 'verdict'
@@ -198,16 +199,16 @@ export default function HomePage() {
   const [justArchived, setJustArchived] = useState(false)
   const [activeArchive, setActiveArchive] = useState<ArchiveRecord | null>(null)
   const [tradingSystem, setTradingSystem] = useState<TradingSystem | null>(() => {
-    try { return JSON.parse(window.localStorage.getItem('thesis-ai-trading-system') || 'null') as TradingSystem | null } catch { return null }
+    try { return JSON.parse(storageGet('thesis-ai-trading-system') || 'null') as TradingSystem | null } catch { return null }
   })
   const [systemModalOpen, setSystemModalOpen] = useState(false)
   const [systemDraft, setSystemDraft] = useState('')
   const [systemError, setSystemError] = useState('')
   const [archives, setArchives] = useState<ArchiveRecord[]>(() => {
-    try { return JSON.parse(window.localStorage.getItem('thesis-ai-archives') || '[]') as ArchiveRecord[] } catch { return [] }
+    try { return JSON.parse(storageGet('thesis-ai-archives') || '[]') as ArchiveRecord[] } catch { return [] }
   })
   const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>(() => {
-    try { return JSON.parse(window.localStorage.getItem('thesis-ai-portfolio') || '[]') as PortfolioItem[] } catch { return [] }
+    try { return JSON.parse(storageGet('thesis-ai-portfolio') || '[]') as PortfolioItem[] } catch { return [] }
   })
   const [portfolioDraft, setPortfolioDraft] = useState('中际旭创 5%\n浪潮信息 4%\n贵州茅台 8%\n宁德时代 6%\n招商银行 10%')
   const [portfolioError, setPortfolioError] = useState('')
@@ -222,7 +223,7 @@ export default function HomePage() {
   const [reviewError, setReviewError] = useState('')
   const [reviewReportReady, setReviewReportReady] = useState(false)
   const [reviewRecords, setReviewRecords] = useState<ReviewRecord[]>(() => {
-    try { return JSON.parse(window.localStorage.getItem('thesis-ai-reviews') || '[]') as ReviewRecord[] } catch { return [] }
+    try { return JSON.parse(storageGet('thesis-ai-reviews') || '[]') as ReviewRecord[] } catch { return [] }
   })
   const [marketUpdatedAt, setMarketUpdatedAt] = useState(() => new Date().toISOString())
   const [marketRefreshing, setMarketRefreshing] = useState(false)
@@ -274,20 +275,20 @@ export default function HomePage() {
   }, [activeMembers.length, stage, committeeTick])
 
   useEffect(() => {
-    window.localStorage.setItem('thesis-ai-archives', JSON.stringify(archives))
+    storageSet('thesis-ai-archives', JSON.stringify(archives))
   }, [archives])
 
   useEffect(() => {
-    window.localStorage.setItem('thesis-ai-portfolio', JSON.stringify(portfolioItems))
+    storageSet('thesis-ai-portfolio', JSON.stringify(portfolioItems))
   }, [portfolioItems])
 
   useEffect(() => {
-    window.localStorage.setItem('thesis-ai-reviews', JSON.stringify(reviewRecords))
+    storageSet('thesis-ai-reviews', JSON.stringify(reviewRecords))
   }, [reviewRecords])
 
   useEffect(() => {
-    if (tradingSystem) window.localStorage.setItem('thesis-ai-trading-system', JSON.stringify(tradingSystem))
-    else window.localStorage.removeItem('thesis-ai-trading-system')
+    if (tradingSystem) storageSet('thesis-ai-trading-system', JSON.stringify(tradingSystem))
+    else storageRemove('thesis-ai-trading-system')
   }, [tradingSystem])
 
   useEffect(() => {

@@ -1,4 +1,6 @@
 // 本地演示账户与付费分层：免费版 / 专业版（29 元/月，演示不真实扣费）。
+import { storageGet, storageSet } from './storage'
+
 const STORAGE_KEY = 'fp-user'
 
 export type PlanState = {
@@ -22,12 +24,12 @@ function defaultPlan(): PlanState {
 }
 
 function save(plan: PlanState) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(plan))
+  storageSet(STORAGE_KEY, JSON.stringify(plan))
 }
 
 export function getPlan(): PlanState {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = storageGet(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PlanState>
       return { ...defaultPlan(), ...parsed }
