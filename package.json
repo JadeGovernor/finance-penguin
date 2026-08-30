@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "demo": "node server/proxy.mjs",
+    "demo:build": "npm run build && npm run demo"
   },
   "dependencies": {
     "@codeflicker/appwrite": "latest",

@@ -39,13 +39,22 @@
 
 清除浏览器站点数据会同时删除上述内容。旧版本档案缺少新字段时，页面会使用任务主题及默认行动参数兼容展示。
 
-## 本地启动
+## 本地演示（推荐：真实行情 + 真实 AI）
 
-项目使用工作区内的 Node 22：
+```bash
+npm run demo:build     # 构建后启动本地演示服务 → http://127.0.0.1:8787
+```
+
+- 行情：每次进入页面自动从免费实时行情接口抓取（东方财富 push2，腾讯兜底）；点「最新行情 · 重置」重新抓取。
+- AI：分析助手、组合体检、复盘教练由 DeepSeek `deepseek-v4-flash` 真实生成；API key 经本地代理调用，不进入前端。
+- key 解析顺序：环境变量 `DEEPSEEK_API_KEY` > 项目 `.env.local`（已 gitignore，不会被提交）> OpenClaw 本地 auth 存储（`~/.openclaw/.../openclaw-agent.sqlite`，自动读取）。
+- 付费分层（演示）：免费版基础分析不限次，组合体检+复盘共 10 次，单日超 100 次降智；专业版 29 元/月不限次（不真实扣费）。
+
+## 开发
 
 ```bash
 export PATH="$PWD/.tools/node/bin:$PATH"
-npm run dev
+npm run dev        # Vite 开发服务器（/api 自动代理到 127.0.0.1:8787）
 ```
 
 质量检查：
@@ -55,3 +64,9 @@ export PATH="$PWD/.tools/node/bin:$PATH"
 npm run lint
 npm run build
 ```
+
+## 线上 GitHub Pages
+
+https://jadegovernor.github.io/finance-penguin/ （访问密码 CHEZHI）
+
+线上为静态托管：实时行情可用；AI 分析需要在带代理的环境运行（本地 `npm run demo:build` 或部署 serverless 代理并设置 `VITE_API_BASE` + `DEEPSEEK_API_KEY`），否则页面会提示 AI 服务未连接。

@@ -6,6 +6,10 @@ import {
   ShieldQuestion, Target, Trash2, TrendingDown, TrendingUp, X,
 } from 'lucide-react'
 
+import { fetchQuotes, type Quote } from '@/lib/quotes'
+import { runAnalysis, type AnalysisResult, type AnalysisMember } from '@/lib/ai'
+import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, FREE_DEGRADE_AFTER, type PlanState } from '@/lib/plan'
+
 type EntryMode = 'thesis' | 'stock'
 type Stage = 'input' | 'candidates' | 'committee' | 'verdict'
 type View = 'assistant' | 'portfolio' | 'review' | 'archives'
@@ -14,7 +18,7 @@ type ArchiveRecord = {
   score: number; price: number; createdAt: string; updatedAt: string; expiresAt: string;
   entryPrice?: number; stopPrice?: number; takeRange: string; initialPosition?: string; maxPosition?: string;
   tradingSystemText?: string; tradingSystemUpdatedAt?: string; systemVerdict?: string;
-  stopRange?: string; status: '有效' | '即将过期' | '已过期';
+  stopRange?: string; members?: AnalysisMember[]; marketNote?: string; status: '有效' | '即将过期' | '已过期';
 }
 type TradingSystem = { text: string; updatedAt: string }
 type PortfolioItem = {
@@ -114,7 +118,7 @@ const baseCommittee = [
   },
 ]
 
-const scores = [
+const fallbackScores = [
   { label: '逻辑强度', value: 84, help: '传导链完整，业务相关度较高' },
   { label: '证据完整度', value: 68, help: '缺少最新订单与一致预期' },
   { label: '兑现程度', value: 74, help: '业务成立，利润兑现仍需验证' },
@@ -153,6 +157,10 @@ function normalizePortfolioInput(input: string): PortfolioItem[] {
 
 function getScoreTone(score: number) {
   return score >= 75 ? 'high' : score >= 60 ? 'medium' : 'low'
+}
+
+function memberIcon(key: string) {
+  return key === 'bull' ? TrendingUp : key === 'bear' ? TrendingDown : key === 'risk' ? ShieldCheck : key === 'judge' ? Gavel : FileText
 }
 
 function getArchiveFileName(archive: ArchiveRecord) {
@@ -214,31 +222,24 @@ export default function HomePage() {
   })
   const [marketUpdatedAt, setMarketUpdatedAt] = useState(() => new Date().toISOString())
   const [marketRefreshing, setMarketRefreshing] = useState(false)
+  const [live, setLive] = useState<AnalysisResult | null>(null)
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({})
+  const [quotesAt, setQuotesAt] = useState<number | null>(null)
+  const [plan, setPlan] = useState<PlanState>(() => getPlan())
+  const [pricingOpen, setPricingOpen] = useState(false)
 
-  const scenario = mode === 'thesis' ? themeScenario : stockScenario
-  const mySystemMember = useMemo(() => ({
-    key: 'system', label: '我的系统', icon: FileText, tone: 'system', score: 69,
-    summary: '已严格按您保存的交易规则逐条核对。当前价格与确认条件尚未形成完整闭环，系统结果为依据不足，暂不触发观察计划。',
-    conclusion: '用户系统原始结论：依据不足，保持观察，不触发首次 5% 观察仓位。',
-    analysis: [
-      `使用的规则摘要：${tradingSystem?.text.slice(0, 120) || '未提供规则'}${(tradingSystem?.text.length || 0) > 120 ? '…' : ''}`,
-      '规则命中：风险优先、等待价格确认与限制首次仓位的要求可以纳入分析；当前没有证据支持突破确认或基本面新增催化已经同时发生。',
-      '未满足与冲突：缺少可量化的入场定义、加仓优先级和冲突规则。系统不会补写用户未提供的条件，因此本轮只能给出依据不足。',
-    ],
-    basis: ['用户保存的交易系统原文', '观察触发价 ¥162', '首次观察仓位 5%，最高 10%'],
-    evidence: [{ id: 'U-01', name: '用户交易系统快照', date: tradingSystem?.updatedAt.slice(0, 10) || '未保存', url: '#trading-system' }, { id: 'E-02', name: '盘后行情 Mock 快照', date: '2026-08-21', url: 'https://data.eastmoney.com/stockdata/300308.html' }],
-    gap: '规则缺少明确的量化触发优先级，且当前行情为 Mock 数据；依据不足时不会代替用户补全规则。',
-  }), [tradingSystem])
-  const activeMembers = useMemo(() => tradingSystem
-    ? [...baseCommittee.slice(0, 3), mySystemMember, baseCommittee[3]]
-    : baseCommittee, [mySystemMember, tradingSystem])
+  const scenario = live
+    ? { input: query, interpretation: live.interpretation, strategy: live.strategy, candidates: live.candidates }
+    : (mode === 'thesis' ? themeScenario : stockScenario)
+  const scores = live?.scores ?? fallbackScores
+  const activeMembers = useMemo(() => live?.members ?? [], [live])
   const committeeStep = Math.floor(committeeTick / 2)
   const committeePhase = committeeTick < 0 ? 'waiting' : committeeTick % 2 === 0 ? 'thinking' : 'generating'
   const isStockMode = mode === 'stock'
   const stageIndex = isStockMode && (stage === 'committee' || stage === 'verdict') ? { committee: 1, verdict: 2 }[stage] : { input: 0, candidates: 1, committee: 2, verdict: 3 }[stage]
   const candidateSectionTitle = `匹配 ${scenario.candidates.length} 个观察标的`
   const candidateSectionDescription = '匹配度代表验证价值，不代表上涨概率。'
-  const candidatePoolLabel = 'Mock 行情'
+  const candidatePoolLabel = quotesAt ? '实时行情' : '行情获取中…'
   const committeeDescription = isStockMode
     ? `围绕 ${selected?.name || '目标股票'} 验证用户判断，对照同行只作参考。`
     : `多视角生成判断${tradingSystem ? '，并核对您的交易系统' : ''}。`
@@ -246,6 +247,10 @@ export default function HomePage() {
     ? `只对目标股票给出结论；评分代表跟踪价值，不等于买入信号。${tradingSystem ? '用户系统结论会单独保留。' : ''}`
     : `汇总多方观点后的跟踪结论；评分不等于买入信号。${tradingSystem ? '用户系统结论会单独保留。' : ''}`
   const marketTimeLabel = new Date(marketUpdatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const planWindow = (() => {
+    const f = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return `${f(new Date())} — ${f(new Date(Date.now() + 7 * 86400000))}`
+  })()
 
   useEffect(() => {
     if (stage !== 'committee' || committeeTick >= activeMembers.length * 2 - 1) return
@@ -388,34 +393,53 @@ export default function HomePage() {
   const switchMode = (nextMode: EntryMode) => {
     setMode(nextMode)
     setQuery(nextMode === 'thesis' ? themeScenario.input : stockScenario.input)
-    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false)
+    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null)
   }
 
-  const discover = () => {
+  const loadQuotes = async (codes?: string[]) => {
+    const list = codes?.length ? codes : Object.keys(stockProfiles)
+    setMarketRefreshing(true)
+    try {
+      const result = await fetchQuotes(list)
+      if (Object.keys(result).length) {
+        setQuotes((prev) => ({ ...prev, ...result }))
+        setQuotesAt(Date.now())
+        setMarketUpdatedAt(new Date().toISOString())
+      }
+    } catch { /* 保留旧数据 */ } finally {
+      setMarketRefreshing(false)
+    }
+  }
+
+  useEffect(() => { void loadQuotes() }, [])
+
+  const refreshMarket = () => {
+    reset()
+    loadQuotes()
+    window.setTimeout(() => setToast('已抓取最新行情并重置'), 300)
+  }
+
+  const discover = async () => {
     if (query.trim().length < 8) {
       setError('请补充观点、方向和时间。')
       return
     }
     setError(''); setLoading(true)
-    window.setTimeout(() => {
-      setLoading(false)
-      if (isStockMode) {
-        startCommittee(stockScenario.candidates[0])
-        return
-      }
+    try {
+      const tracked = trackAnalysis(plan)
+      setPlan(tracked.plan)
+      if (tracked.count === FREE_DEGRADE_AFTER + 1) setToast('今日免费请求已超过 100 次，已启用降智模式')
+      const result = await runAnalysis({ input: query, mode, tradingSystem: tradingSystem?.text, quotes: Object.values(quotes), degraded: tracked.degraded })
+      setLive(result)
+      if (result.candidates.length) loadQuotes(result.candidates.map((c) => c.code))
+      if (isStockMode) { startCommittee(result.candidates[0]); return }
       setStage('candidates')
       window.setTimeout(() => document.querySelector('#candidates')?.scrollIntoView({ behavior: 'smooth' }), 30)
-    }, 800)
-  }
-
-  const refreshMarket = () => {
-    setMarketRefreshing(true)
-    reset()
-    window.setTimeout(() => {
-      setMarketUpdatedAt(new Date().toISOString())
-      setMarketRefreshing(false)
-      setToast('已刷新行情并重置')
-    }, 650)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '分析失败，请重试。')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const startCommittee = (candidate: Candidate) => {
@@ -431,14 +455,17 @@ export default function HomePage() {
     const now = new Date().toISOString()
     const id = `${mode}-${scenario.interpretation.subject}-${selected.code}`
     const existing = archives.find((item) => item.id === id)
+    const sys = live?.members.find((m) => m.key === 'system')
     const record: ArchiveRecord = {
       id, taskTitle: scenario.interpretation.subject, code: selected.code, name: selected.name, query, subject: scenario.interpretation.subject,
-      verdict: '暂不行动', score: 72, price: selected.price,
+      verdict: live?.verdict.title ?? '暂不行动', score: live?.verdict.score ?? 72, price: selected.price,
       createdAt: existing?.createdAt || now, updatedAt: now,
-      expiresAt: '2026-09-01T23:59:59+08:00', entryPrice: 162, stopPrice: 157,
-      takeRange: '¥175 — ¥178', initialPosition: '5%', maxPosition: '10%',
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+      entryPrice: live?.plan.entryPrice ?? 162, stopPrice: live?.plan.stopPrice ?? 157,
+      takeRange: live?.plan.takeRange ?? '¥175 — ¥178', initialPosition: live?.plan.initialPosition ?? '5%', maxPosition: live?.plan.maxPosition ?? '10%',
       tradingSystemText: tradingSystem?.text, tradingSystemUpdatedAt: tradingSystem?.updatedAt,
-      systemVerdict: tradingSystem ? '依据不足，保持观察，不触发首次 5% 观察仓位。' : undefined,
+      systemVerdict: sys?.conclusion ?? (tradingSystem ? '依据不足，保持观察，不触发首次 5% 观察仓位。' : undefined),
+      members: live?.members, marketNote: live?.marketNote,
       status: '有效',
     }
     setArchives((items) => [record, ...items.filter((item) => item.id !== id)])
@@ -480,6 +507,9 @@ export default function HomePage() {
   const removePortfolioItem = (code: string) => { setPortfolioItems((items) => items.filter((item) => item.code !== code)); setPortfolioReportReady(false) }
   const runPortfolioAnalysis = () => {
     if (portfolioItems.length < 2) { setPortfolioError('至少添加 2 只股票后才能生成组合综合分析。'); return }
+    const gate = tryUsePremium(plan)
+    setPlan(gate.plan)
+    if (!gate.ok) { setPortfolioError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
     setPortfolioError(''); setPortfolioReportReady(true)
     window.setTimeout(() => document.querySelector('#portfolio-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
   }
@@ -492,6 +522,9 @@ export default function HomePage() {
   }
   const runReview = () => {
     if (reviewOperation.trim().length < 20 || reviewReason.trim().length < 10 || !reviewPnl.trim()) { setReviewError('请补充实际操作、当时判断和最终盈亏，AI 才能区分无法规避与可以优化。'); return }
+    const gate = tryUsePremium(plan)
+    setPlan(gate.plan)
+    if (!gate.ok) { setReviewError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
     setReviewError(''); setReviewReportReady(true)
     const record: ReviewRecord = { id: `${Date.now()}`, mode: reviewMode, title: reviewMode === 'stock' ? '中级宣传' : '组合部分', result: reviewResult, pnl: reviewPnl, source: reviewAnalysis.sourceTitle, createdAt: new Date().toISOString(), operation: reviewOperation, reason: reviewReason, question: reviewQuestion, archiveId: reviewArchive?.id }
     setReviewRecords((items) => [record, ...items].slice(0, 12))
@@ -509,11 +542,12 @@ export default function HomePage() {
     window.setTimeout(() => document.querySelector('#review-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
   }
   const deleteArchive = (id: string) => { setArchives((items) => items.filter((item) => item.id !== id)); setActiveArchive(null); setToast('留档已删除') }
+  const handleUpgrade = () => { const next = upgradePlan(); setPlan(next); setPricingOpen(false); setToast('演示环境已开通专业版（未真实扣费）') }
 
   return <div className="app">
     <header className="topbar">
       <div className="brand"><button className="icon-btn menu-btn" aria-label="打开流程导航" onClick={() => setNavOpen(!navOpen)}><Menu size={18}/></button><div className="logo penguin-logo" aria-hidden="true"><svg viewBox="0 0 40 40" role="img"><ellipse cx="20" cy="20" rx="12" ry="15" fill="#111827"/><ellipse cx="20" cy="23" rx="8" ry="10" fill="#f8fafc"/><circle cx="16" cy="15" r="2.1" fill="#f8fafc"/><circle cx="24" cy="15" r="2.1" fill="#f8fafc"/><path d="M12 14h7v4h-7zM21 14h7v4h-7z" fill="#020617"/><path d="M19 16h2" stroke="#020617" strokeWidth="1.5"/><path d="M18 20h4l-2 2.5z" fill="#f59e0b"/><path d="M13 31c2 2 12 2 14 0" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/></svg></div><div><strong>finance penguin</strong><span>A 股假设验证台</span></div></div>
-      <div className="top-actions"><button className="market-refresh" onClick={refreshMarket} disabled={marketRefreshing} aria-label="刷新最新行情并重置"><Database size={13}/><span>最新行情 · 重置</span><strong>{marketTimeLabel}</strong>{marketRefreshing && <RefreshCw className="spin" size={13}/>}</button></div>
+      <div className="top-actions"><button className="plan-chip" onClick={() => setPricingOpen(true)} aria-label="查看会员方案"><BadgeCheck size={13}/><span>{plan.tier === 'pro' ? '专业版 · 已开通' : `免费版 · 高级功能剩余 ${premiumRemaining(plan)} 次`}</span><strong>{plan.tier === 'pro' ? '29 元/月' : '升级专业版'}</strong></button><button className="market-refresh" onClick={refreshMarket} disabled={marketRefreshing} aria-label="刷新最新行情并重置"><Database size={13}/><span>最新行情 · 重置</span><strong>{marketTimeLabel}</strong>{marketRefreshing && <RefreshCw className="spin" size={13}/>}</button></div>
     </header>
 
     <aside className={`rail ${navOpen ? 'open' : ''}`}>
@@ -523,7 +557,7 @@ export default function HomePage() {
       <button className={`module-nav ${view === 'review' ? 'active' : ''}`} onClick={showReview}><ClipboardCheck size={17}/><div><strong>复盘教练</strong><span>{reviewRecords.length} 条复盘记录</span></div></button>
       <button className={`module-nav ${view === 'archives' ? 'active' : ''}`} onClick={showArchives}><Archive size={17}/><div><strong>留档</strong><span>{archives.length} 份完整分析</span></div></button>
       {view === 'assistant' && <><div className="rail-label flow-label">分析进度</div>{(isStockMode ? ['输入观点', '多方分析', '综合判断', '观察计划'] : ['输入观点', '验证标的', '多方分析', '综合判断', '观察计划']).map((label, index) => <div className={`rail-item ${index === stageIndex ? 'active' : ''} ${index < stageIndex ? 'done' : ''}`} key={label}><span>{index < stageIndex ? <Check size={13}/> : index + 1}</span>{label}</div>)}</>}
-      <div className="rail-warning"><AlertTriangle size={16}/><p>演示数据为 Mock 盘后快照，非实时行情，不构成投资建议。</p></div>
+      <div className="rail-warning"><AlertTriangle size={16}/><p>行情为真实免费接口实时快照，AI 分析由 DeepSeek 生成；仅供学习验证，不构成投资建议。</p></div>
     </aside>
 
     <main className="workspace">
@@ -558,13 +592,16 @@ export default function HomePage() {
           const rankLabel = isStockMode ? (isTargetStock ? '目标股票' : `对照参照 ${index}`) : `验证 ${index + 1}`
           const scoreLabel = isComparison ? '参照度' : '匹配度'
           const roleLabel = isStockMode ? (isTargetStock ? '本轮验证对象' : '对照用途') : '验证作用'
+          const quote = quotes[candidate.code]
+          const price = quote?.price ?? candidate.price
+          const change = quote?.changePct ?? candidate.change
           return <article className={`candidate ${selected?.code === candidate.code ? 'selected' : ''}`} key={candidate.code}>
           <div className="candidate-top"><span className="rank">{rankLabel}</span><div className={`match-score ${scoreTone}`}><strong>{candidate.score}</strong><span>{scoreLabel}</span></div></div>
-          <div className="company"><div><h3>{candidate.name}</h3><span>{candidate.code}</span></div><div><strong>¥{candidate.price.toFixed(2)}</strong><span className={candidate.change >= 0 ? 'up' : 'down'}>{candidate.change >= 0 ? '+' : ''}{candidate.change}%</span></div></div>
+          <div className="company"><div><h3>{candidate.name}</h3><span>{candidate.code}</span></div><div><strong>¥{price.toFixed(2)}</strong><span className={change >= 0 ? 'up' : 'down'}>{change >= 0 ? '+' : ''}{change}%</span></div></div>
           <div className="role"><Target size={15}/><div><span>{roleLabel}</span><strong>{candidate.role}</strong></div></div>
           <div className="tags">{candidate.tags.map((tag) => <Pill key={tag} tone="accent">{tag}</Pill>)}</div>
           <dl><div><dt>{isComparison ? '参照依据' : '匹配依据'}</dt><dd>{candidate.reason}</dd></div><div><dt>{isComparison ? '如何辅助判断' : '为什么值得关注'}</dt><dd>{candidate.difference}</dd></div><div className="doubt"><dt>主要风险</dt><dd>{candidate.doubt}</dd></div></dl>
-          <div className="candidate-foot"><span><Clock3 size={12}/>演示数据 · Mock 盘后快照</span>{isComparison ? <span className="btn ghost small" aria-disabled="true">仅作对照，不进入分析</span> : <button className="btn secondary choose-btn" onClick={() => startCommittee(candidate)}>{isTargetStock ? `开始验证${candidate.name}` : '选择并开始分析'}<ChevronRight size={15}/></button>}</div>
+          <div className="candidate-foot"><span><Clock3 size={12}/>{quotesAt ? `实时行情 · ${new Date(quotesAt).toLocaleTimeString('zh-CN')} 抓取` : '行情获取中…'}</span>{isComparison ? <span className="btn ghost small" aria-disabled="true">仅作对照，不进入分析</span> : <button className="btn secondary choose-btn" onClick={() => startCommittee(candidate)}>{isTargetStock ? `开始验证${candidate.name}` : '选择并开始分析'}<ChevronRight size={15}/></button>}</div>
         </article>})}</div>
       </section>}
 
@@ -572,13 +609,13 @@ export default function HomePage() {
         <div className="section-head"><div><span className="section-no">03 / 多方分析</span><h2>{selected.name} · 多方分析</h2><p>{committeeDescription}</p></div><Pill tone="mock">{activeMembers.length} 个视角</Pill></div>
         <div className="committee-track">{activeMembers.map((member, index) => { const current = stage === 'committee' && index === committeeStep; const complete = stage === 'verdict' || index < committeeStep; const status = complete ? '已完成' : current ? committeePhase === 'thinking' ? '思考中' : '正在生成' : '等待中'; return <div className={`track-item ${complete ? 'complete' : ''} ${current ? 'active' : ''}`} key={member.key}><span>{complete ? <Check size={14}/> : current ? <RefreshCw className="spin" size={14}/> : index + 1}</span><div><strong>{member.label}</strong><small>{status}</small></div></div>})}</div>
         {stage === 'committee' && committeeStep >= 0 && activeMembers[committeeStep] && <div className={`speaker-status ${activeMembers[committeeStep].tone}`}><span className="speaker-pulse"><RefreshCw className="spin" size={17}/></span><div><strong>{activeMembers[committeeStep].label}{committeePhase === 'thinking' ? '正在思考…' : '正在整理分析…'}</strong><p>{activeMembers[committeeStep].key === 'system' ? '正在逐条读取您保存的规则，仅按原文核对条件与冲突。' : committeePhase === 'thinking' ? '正在阅读业务、行情与风险依据，形成独立判断。' : '已形成核心观点，正在生成详细分析与证据索引。'}</p></div></div>}
-        <div className="committee-list">{activeCommittee.map((member) => { const Icon = member.icon; const open = expandedMember === member.key; return <article className={`member ${member.tone}`} key={member.key}><button className="member-head" onClick={() => setExpandedMember(open ? null : member.key)}><span className="member-icon"><Icon size={18}/></span><div><span>{member.label} · 已完成</span><strong>{member.summary}</strong><small>{open ? '收起完整分析' : '展开完整分析与依据'}</small></div><b>{member.score}</b><ChevronDown className={open ? 'rotate' : ''} size={17}/></button>{open && <div className="member-detail"><div className="member-conclusion"><span>核心结论</span><strong>{member.conclusion}</strong></div><div className="analysis-copy">{member.analysis.map((paragraph, index) => <p key={paragraph}><b>{index + 1}</b>{paragraph}</p>)}</div><div className="basis-grid"><div><h4>分析依据</h4><ul>{member.basis.map((item) => <li key={item}>{item}</li>)}</ul></div><div className="evidence-gap"><h4>待补充信息</h4><p>{member.gap}</p></div></div><div className="evidence-list"><h4>证据与来源</h4>{member.evidence.map((item) => <a key={item.id} href={item.url} target="_blank" rel="noreferrer"><span>{item.id}</span><div><strong>{item.name}</strong><small>数据日期：{item.date}</small></div><ChevronRight size={14}/></a>)}</div></div>}</article>})}</div>
+        <div className="committee-list">{activeCommittee.map((member) => { const Icon = memberIcon(member.key); const open = expandedMember === member.key; return <article className={`member ${member.tone}`} key={member.key}><button className="member-head" onClick={() => setExpandedMember(open ? null : member.key)}><span className="member-icon"><Icon size={18}/></span><div><span>{member.label} · 已完成</span><strong>{member.summary}</strong><small>{open ? '收起完整分析' : '展开完整分析与依据'}</small></div><b>{member.score}</b><ChevronDown className={open ? 'rotate' : ''} size={17}/></button>{open && <div className="member-detail"><div className="member-conclusion"><span>核心结论</span><strong>{member.conclusion}</strong></div><div className="analysis-copy">{member.analysis.map((paragraph, index) => <p key={paragraph}><b>{index + 1}</b>{paragraph}</p>)}</div><div className="basis-grid"><div><h4>分析依据</h4><ul>{member.basis.map((item) => <li key={item}>{item}</li>)}</ul></div><div className="evidence-gap"><h4>待补充信息</h4><p>{member.gap}</p></div></div><div className="evidence-list"><h4>证据与来源</h4>{member.evidence.map((item) => <a key={item.id} href={item.url} target="_blank" rel="noreferrer"><span>{item.id}</span><div><strong>{item.name}</strong><small>数据日期：{item.date}</small></div><ChevronRight size={14}/></a>)}</div></div>}</article>})}</div>
         {stage === 'committee' && <div className="committee-footnote">当前视角完成后，将自动进入下一位。综合判断只会在{tradingSystem ? '乐观、悲观、风控和“我的系统”' : '乐观、悲观和风控'}全部完成后生成，约数秒完成。</div>}
       </section>}
 
       {stage === 'verdict' && selected && <section className="block verdict-section">
-        <div className="section-head"><div><span className="section-no">04 / 综合判断</span><h2>{isStockMode ? `${selected.name} · 综合判断` : '综合判断'}</h2><p>{verdictDescription}</p></div><div className="score-total"><span>跟踪评分</span><strong>72</strong><em>/ 100</em></div></div>
-        <div className="verdict-grid"><div className="score-panel">{scores.map((item) => <div className="score-row" key={item.label}><div><strong>{item.label}</strong><span>{item.help}</span></div><div className="score-meter"><i style={{ width: `${item.value}%` }}/></div><b>{item.value}</b></div>)}</div><aside className="verdict-card"><span className="verdict-label">系统综合判断</span><h3>暂不行动，继续观察</h3><p>业务关联与中期需求逻辑较强；市场反映程度和订单证据缺口构成主要扣分。建议用一周窗口观察价格确认与新增证据，不将评分理解为上涨概率。</p><div className="deduction"><AlertTriangle size={15}/><span>主要扣分：市场拥挤、最新订单缺失、短期事件风险</span></div><button className="btn primary full" onClick={openRisk}><CalendarClock size={16}/>生成一周观察计划</button></aside></div>
+        <div className="section-head"><div><span className="section-no">04 / 综合判断</span><h2>{isStockMode ? `${selected.name} · 综合判断` : '综合判断'}</h2><p>{verdictDescription}</p></div><div className="score-total"><span>跟踪评分</span><strong>{live?.verdict.score ?? 72}</strong><em>/ 100</em></div></div>
+        <div className="verdict-grid"><div className="score-panel">{scores.map((item) => <div className="score-row" key={item.label}><div><strong>{item.label}</strong><span>{item.help}</span></div><div className="score-meter"><i style={{ width: `${item.value}%` }}/></div><b>{item.value}</b></div>)}</div><aside className="verdict-card"><span className="verdict-label">系统综合判断</span><h3>{live?.verdict.title ?? '暂不行动，继续观察'}</h3><p>{live?.verdict.conclusion ?? '业务关联与中期需求逻辑较强；市场反映程度和订单证据缺口构成主要扣分。建议用一周窗口观察价格确认与新增证据，不将评分理解为上涨概率。'}</p><div className="deduction"><AlertTriangle size={15}/><span>{live?.verdict.deduction || '主要扣分：市场拥挤、最新订单缺失、短期事件风险'}</span></div>{live?.marketNote && <div className="ai-disclaimer"><Database size={14}/><p>{live.marketNote}</p></div>}<button className="btn primary full" onClick={openRisk}><CalendarClock size={16}/>生成一周观察计划</button></aside></div>
       </section>}
       </> : view === 'portfolio' ? <section className="portfolio-page">
         <div className="portfolio-hero"><div><h1>组合体检</h1></div><div className={`portfolio-total ${getScoreTone(portfolioAnalysis.score)}`}><span>组合评分</span><strong>{portfolioItems.length >= 2 ? portfolioAnalysis.score : '--'}</strong></div></div>
@@ -617,20 +654,21 @@ export default function HomePage() {
     {cardOpen && <div className={`drawer-overlay ${cardOpen ? 'show' : ''}`} onClick={closeCard}/>}
     {cardOpen && <aside className="action-drawer open" aria-hidden={false}>
       <div className="drawer-head"><div><span className="section-no">05 / 一周观察计划</span><h2>{selected?.name}</h2></div><button className="icon-btn" onClick={closeCard} aria-label="关闭观察计划"><X size={18}/></button></div>
-      <div className="drawer-body"><div className="expiry"><CalendarClock size={19}/><div><span>观察窗口</span><strong>2026-08-25 — 2026-09-01</strong><small>基于 2026-08-21 Mock 盘后快照 · 到期需重新分析</small></div></div>
-        <div className="price-anchor action-overview"><div><span>综合判断</span><strong className="watch">暂不行动</strong><small>等待价格与证据确认</small></div><div><span>若条件触发</span><strong>首次上限 5%</strong><small>确认后最高 10%</small></div></div>
-        <section className="trade-levels"><h3><Scale size={16}/>观察触发与失效规则</h3><div className="trade-level-grid"><div><span>观察触发价</span><strong>¥162</strong><small>高于参考价不追价</small></div><div className="stop"><span>失效复核价</span><strong>¥157</strong><small>收盘确认后重新判断</small></div><div className="take"><span>兑现观察区间</span><strong>¥175 — ¥178</strong><small>只作跟踪，不自动成交</small></div></div></section>
-        <ActionBlock title="本周观察重点" icon={CircleDot} items={['价格能否在 ¥162 附近获得收盘确认，而非盘中短暂触及', '行业对照标的是否同步走强，证明不是单股噪声', '订单、产品收入占比或盈利预期是否出现新增证据']}/>
-        <ActionBlock title="满足条件后再考虑" icon={TrendingUp} items={['首次观察仓位不超过 5%，仅在收盘确认且行业对照同步走强后考虑', '新增经营证据未削弱核心逻辑，最高关注仓位不超过 10%']}/>
-        <ActionBlock title="降低关注条件" icon={TrendingDown} tone="warning" items={['进入 ¥175—¥178 兑现观察区间后，优先复核上涨是否已有证据支撑', '价格上涨但行业对照转弱，或新增证据低于原先预期']}/>
-        <ActionBlock title="取消观察条件" icon={AlertTriangle} tone="danger" items={['收盘价跌破 ¥157，或跳空导致原风险收益比失效', '主要客户资本开支预期明显下修', '公司公告显示订单、产品或盈利逻辑发生反转']}/>
-        {tradingSystem && <section className="system-snapshot"><div><ShieldCheck size={17}/><h3>本次使用的交易系统</h3></div><p>{tradingSystem.text}</p><strong>系统结论：依据不足，保持观察，不触发首次 5% 观察仓位。</strong></section>}
-        <ActionBlock title="本周待补证据" icon={FileSearch} tone="warning" items={['最新订单及高速产品收入占比', '一致盈利预期最近三个月变化', '同产业链标的相对强弱与成交结构']}/>
-        <div className="ai-disclaimer"><ShieldCheck size={17}/><p>本观察计划基于演示数据和 Mock 盘后快照生成，只用于记录触发条件、失效条件和待补证据，不构成持牌证券投资建议。</p></div>
+      <div className="drawer-body"><div className="expiry"><CalendarClock size={19}/><div><span>观察窗口</span><strong>{planWindow}</strong><small>{quotesAt ? `基于 ${new Date(quotesAt).toLocaleString('zh-CN')} 实时行情 · 到期需重新分析` : '到期需重新分析'}</small></div></div>
+        <div className="price-anchor action-overview"><div><span>综合判断</span><strong className="watch">{live?.verdict.title ?? '暂不行动'}</strong><small>等待价格与证据确认</small></div><div><span>若条件触发</span><strong>首次上限 {live?.plan.initialPosition ?? '5%'}</strong><small>确认后最高 {live?.plan.maxPosition ?? '10%'}</small></div></div>
+        <section className="trade-levels"><h3><Scale size={16}/>观察触发与失效规则</h3><div className="trade-level-grid"><div><span>观察触发价</span><strong>¥{live?.plan.entryPrice ?? '—'}</strong><small>高于参考价不追价</small></div><div className="stop"><span>失效复核价</span><strong>¥{live?.plan.stopPrice ?? '—'}</strong><small>收盘确认后重新判断</small></div><div className="take"><span>兑现观察区间</span><strong>{live?.plan.takeRange || '—'}</strong><small>只作跟踪，不自动成交</small></div></div></section>
+        <ActionBlock title="本周观察重点" icon={CircleDot} items={live?.plan.focus ?? []}/>
+        <ActionBlock title="满足条件后再考虑" icon={TrendingUp} items={live?.plan.satisfy ?? []}/>
+        <ActionBlock title="降低关注条件" icon={TrendingDown} tone="warning" items={live?.plan.reduce ?? []}/>
+        <ActionBlock title="取消观察条件" icon={AlertTriangle} tone="danger" items={live?.plan.cancel ?? []}/>
+        {tradingSystem && <section className="system-snapshot"><div><ShieldCheck size={17}/><h3>本次使用的交易系统</h3></div><p>{tradingSystem.text}</p><strong>{live?.members.find((m) => m.key === 'system')?.conclusion || '系统结论：依据不足，保持观察，不触发首次 5% 观察仓位。'}</strong></section>}
+        <ActionBlock title="本周待补证据" icon={FileSearch} tone="warning" items={live?.plan.pending ?? []}/>
+        <div className="ai-disclaimer"><ShieldCheck size={17}/><p>{live?.marketNote || '本观察计划基于实时行情与 AI 分析生成，只用于记录触发条件、失效条件和待补证据，不构成持牌证券投资建议。'}</p></div>
       </div><div className="drawer-actions archive-drawer-actions"><button className={`btn archive-primary ${justArchived ? 'archived' : ''}`} onClick={saveArchive}>{justArchived ? <CheckCircle2 size={17}/> : <Archive size={17}/>} {justArchived ? '已留档' : archives.some((item) => item.id === `${mode}-${scenario.interpretation.subject}-${selected?.code}`) ? '更新留档' : '保存为留档'}</button><button className="btn ghost" onClick={() => window.print()}>打印</button><button className="btn ghost" onClick={closeCard}>关闭观察计划</button></div>
     </aside>}
-    {activeArchive && <div className="modal-layer"><div className="archive-detail-modal"><div className="archive-detail-head"><div><span className="section-no">完整留档</span><h2>{getArchiveFileName(activeArchive)}</h2><p>{activeArchive.code}</p><p>{activeArchive.query}</p></div><button className="icon-btn" onClick={() => setActiveArchive(null)} aria-label="关闭留档详情"><X size={18}/></button></div><div className="archive-detail-body"><section><div className="doc-title"><FileSearch size={18}/><div><span>文档 01</span><h3>研究分析</h3></div></div><div className="detail-summary"><div><span>分析任务</span><strong>{activeArchive.taskTitle || activeArchive.subject}</strong></div><div><span>综合判断</span><strong>{activeArchive.verdict}</strong></div><div><span>跟踪评分</span><strong>{activeArchive.score} / 100</strong></div></div><div className="detail-opinions">{baseCommittee.map((member) => <div key={member.key}><span>{member.label}</span><p>{member.summary}</p></div>)}</div></section>{activeArchive.tradingSystemText && <section><div className="doc-title"><ShieldCheck size={18}/><div><span>规则快照</span><h3>我的交易系统</h3></div></div><p className="archived-system-text">{activeArchive.tradingSystemText}</p><div className="detail-summary"><div><span>规则更新时间</span><strong>{activeArchive.tradingSystemUpdatedAt ? new Date(activeArchive.tradingSystemUpdatedAt).toLocaleString('zh-CN') : '未记录'}</strong></div><div><span>系统原始结论</span><strong>{activeArchive.systemVerdict || '依据不足'}</strong></div></div></section>}<section><div className="doc-title"><FileText size={18}/><div><span>文档 02</span><h3>观察计划</h3></div></div><div className="detail-summary"><div><span>若条件触发</span><strong>首次 {activeArchive.initialPosition || '5%'} · 最高 {activeArchive.maxPosition || '10%'}</strong></div><div><span>触发 / 失效</span><strong>¥{activeArchive.entryPrice || 162} / ¥{activeArchive.stopPrice || 157}</strong></div><div><span>兑现观察区间</span><strong>{activeArchive.takeRange || '¥175 — ¥178'}</strong></div></div><p className="detail-note">基于 2026-08-21 Mock 盘后快照，有效至 2026-09-01。到期后必须使用最新数据重新分析；价格触及不代表自动交易。</p></section></div><div className="archive-detail-actions"><button className="btn ghost" onClick={() => deleteArchive(activeArchive.id)}><Trash2 size={14}/>删除留档</button><button className="btn secondary" onClick={() => addArchiveToPortfolio(activeArchive)}><Plus size={14}/>加入组合</button><button className="btn secondary" onClick={() => startReviewFromArchive(activeArchive)}><ClipboardCheck size={14}/>开始复盘</button><button className="btn primary" onClick={() => { setActiveArchive(null); showAssistant(); setToast('已返回分析助手，可基于最新数据重新复核') }}><RefreshCw size={14}/>继续复核</button></div></div></div>}
+    {activeArchive && <div className="modal-layer"><div className="archive-detail-modal"><div className="archive-detail-head"><div><span className="section-no">完整留档</span><h2>{getArchiveFileName(activeArchive)}</h2><p>{activeArchive.code}</p><p>{activeArchive.query}</p></div><button className="icon-btn" onClick={() => setActiveArchive(null)} aria-label="关闭留档详情"><X size={18}/></button></div><div className="archive-detail-body"><section><div className="doc-title"><FileSearch size={18}/><div><span>文档 01</span><h3>研究分析</h3></div></div><div className="detail-summary"><div><span>分析任务</span><strong>{activeArchive.taskTitle || activeArchive.subject}</strong></div><div><span>综合判断</span><strong>{activeArchive.verdict}</strong></div><div><span>跟踪评分</span><strong>{activeArchive.score} / 100</strong></div></div><div className="detail-opinions">{(activeArchive.members?.length ? activeArchive.members : baseCommittee).map((member) => <div key={member.key}><span>{member.label}</span><p>{member.summary}</p></div>)}</div></section>{activeArchive.tradingSystemText && <section><div className="doc-title"><ShieldCheck size={18}/><div><span>规则快照</span><h3>我的交易系统</h3></div></div><p className="archived-system-text">{activeArchive.tradingSystemText}</p><div className="detail-summary"><div><span>规则更新时间</span><strong>{activeArchive.tradingSystemUpdatedAt ? new Date(activeArchive.tradingSystemUpdatedAt).toLocaleString('zh-CN') : '未记录'}</strong></div><div><span>系统原始结论</span><strong>{activeArchive.systemVerdict || '依据不足'}</strong></div></div></section>}<section><div className="doc-title"><FileText size={18}/><div><span>文档 02</span><h3>观察计划</h3></div></div><div className="detail-summary"><div><span>若条件触发</span><strong>首次 {activeArchive.initialPosition || '5%'} · 最高 {activeArchive.maxPosition || '10%'}</strong></div><div><span>触发 / 失效</span><strong>¥{activeArchive.entryPrice || 162} / ¥{activeArchive.stopPrice || 157}</strong></div><div><span>兑现观察区间</span><strong>{activeArchive.takeRange || '¥175 — ¥178'}</strong></div></div><p className="detail-note">{activeArchive.marketNote || '基于 2026-08-21 Mock 盘后快照，有效至 2026-09-01。到期后必须使用最新数据重新分析；价格触及不代表自动交易。'}</p></section></div><div className="archive-detail-actions"><button className="btn ghost" onClick={() => deleteArchive(activeArchive.id)}><Trash2 size={14}/>删除留档</button><button className="btn secondary" onClick={() => addArchiveToPortfolio(activeArchive)}><Plus size={14}/>加入组合</button><button className="btn secondary" onClick={() => startReviewFromArchive(activeArchive)}><ClipboardCheck size={14}/>开始复盘</button><button className="btn primary" onClick={() => { setActiveArchive(null); showAssistant(); setToast('已返回分析助手，可基于最新数据重新复核') }}><RefreshCw size={14}/>继续复核</button></div></div></div>}
 
+    {pricingOpen && <div className="modal-layer"><div className="modal pricing-modal"><button className="icon-btn close" onClick={() => setPricingOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><BadgeCheck size={25}/></div><h2>Finance Penguin 会员方案</h2><p>当前为本地演示账户（{plan.name}）。免费版即可体验完整分析；升级专业版解锁不限次数的高级功能（演示环境不真实扣费）。</p><div className="pricing-grid"><div className={`pricing-card ${plan.tier === 'free' ? 'current' : ''}`}><h3>免费版</h3><div className="price">¥0<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {FREE_PREMIUM_QUOTA} 次</li><li>单日超 {FREE_DEGRADE_AFTER} 次请求自动降智</li></ul>{plan.tier === 'free' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn secondary" onClick={() => { setPricingOpen(false); setToast('已切回免费版') }}>切回免费版</button>}</div><div className={`pricing-card pro ${plan.tier === 'pro' ? 'current' : ''}`}><h3>专业版</h3><div className="price">¥29<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：不限次数</li><li>不降智，优先使用深度分析模型</li></ul>{plan.tier === 'pro' ? <button className="btn primary" disabled>已开通</button> : <button className="btn primary" onClick={handleUpgrade}>立即开通（演示）</button>}</div></div><div className="legal-note">演示环境不会真实扣费；正式版本将接入微信/支付宝订阅，并同步真实账号体系。</div></div></div>}
     {toast && <div className="toast" role="status" aria-live="assertive"><CheckCircle2 size={20}/><div><strong>{toast}</strong><span>本次观点、验证标的、综合判断和观察计划已保存</span><button onClick={showArchives}>前往留档查看</button></div><button className="toast-close" onClick={() => setToast('')} aria-label="关闭提示"><X size={15}/></button></div>}
   </div>
 }
