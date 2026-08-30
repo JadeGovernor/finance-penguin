@@ -22,3 +22,26 @@
 .plan-chip{min-height:34px;display:flex;align-items:center;gap:7px;padding:6px 10px;color:var(--body);background:#101a2a;border:1px solid rgba(46,205,164,.35);border-radius:7px}.plan-chip svg{color:var(--primary)}.plan-chip span{color:var(--muted);font-size:10px}.plan-chip strong{color:var(--primary);font-size:11px}.plan-chip:hover{border-color:var(--primary)}
 .pricing-modal{max-width:560px;width:calc(100vw - 40px)}.pricing-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0 6px}.pricing-card{padding:16px;background:var(--panel2);border:1px solid var(--line);border-radius:9px}.pricing-card.pro{border-color:rgba(46,205,164,.5);background:linear-gradient(180deg,rgba(46,205,164,.07),var(--panel2))}.pricing-card.current{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}.pricing-card h3{margin:0;color:var(--text);font-size:15px}.pricing-card .price{margin:8px 0 10px;color:var(--text);font-size:24px;font-weight:750}.pricing-card .price small{color:var(--muted);font-size:11px;font-weight:500}.pricing-card ul{margin:0 0 14px;padding:0;list-style:none;display:grid;gap:7px}.pricing-card li{padding-left:16px;position:relative;color:var(--body);font-size:11.5px;line-height:1.5}.pricing-card li::before{content:"✓";position:absolute;left:0;color:var(--primary);font-weight:700}.pricing-card .btn{width:100%}
 @media(max-width:767px){.plan-chip span{display:none}.pricing-grid{grid-template-columns:1fr}}
+
+/* 复盘历史：按月收纳 + 收藏置顶 + 重命名/删除 */
+.review-group{margin-bottom:10px}
+.review-group-head{width:100%;display:flex;align-items:center;gap:7px;padding:8px 10px;color:var(--body);background:var(--panel2);border:1px solid var(--line);border-radius:7px;font-size:11px}
+.review-group-head svg{flex:0 0 auto;color:var(--muted);transition:transform .15s}
+.review-group-head .rotate{transform:rotate(90deg)}
+.review-group-head strong{color:var(--text);font-size:11px}
+.review-group-head span{margin-left:auto;color:var(--dim);font-size:9px}
+.review-group.pinned .review-group-head{color:var(--amber);border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.06)}
+.review-group.pinned .review-group-head strong,.review-group.pinned .review-group-head svg{color:var(--amber)}
+.review-group-body{padding:8px 0 2px 12px;display:grid;gap:8px}
+.review-date-block{display:grid;gap:6px}
+.review-date-label{padding:2px 2px 0;color:var(--dim);font-size:9px;font-weight:650;letter-spacing:.04em}
+.review-record{position:relative;display:block;padding:0;overflow:hidden}
+.review-record-main{width:100%;display:block;text-align:left;padding:11px 64px 11px 11px;background:transparent;border:0}
+.review-record-main:hover{background:rgba(46,205,164,.04)}
+.review-record-actions{position:absolute;top:8px;right:8px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.review-record:hover .review-record-actions,.review-record:focus-within .review-record-actions{opacity:1}
+.review-record-actions .icon-btn{width:26px;height:26px;min-height:26px;padding:0}
+.review-record-actions .icon-btn.pinned{color:var(--amber)}
+.rename-input{width:100%;min-height:auto;padding:10px 12px;font-size:13px}
+@media(hover:none){.review-record-actions{opacity:1}}
+@media(max-width:767px){.review-record-main{padding-right:11px}.review-record-actions{position:static;opacity:1;justify-content:flex-end;padding:0 8px 8px}.review-record-actions .icon-btn{min-height:34px}}

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, Archive, BadgeCheck, BrainCircuit, CalendarClock,
   Check, CheckCircle2, ChevronDown, ChevronRight, CircleDot, ClipboardCheck, Clock3, Database, FileSearch, FileText,
-  FolderOpen, Gavel, Info, Layers3, Menu, PieChart, Plus, RefreshCw, Scale, Search, ShieldCheck,
+  FolderOpen, Gavel, Info, Layers3, Menu, Pencil, PieChart, Plus, RefreshCw, Scale, Search, ShieldCheck,
   ShieldQuestion, Target, Trash2, TrendingDown, TrendingUp, X,
 } from 'lucide-react'
 
@@ -27,7 +27,7 @@ type PortfolioItem = {
 type ReviewMode = 'stock' | 'portfolio'
 type ReviewRecord = {
   id: string; mode: ReviewMode; title: string; result: string; pnl: string; source?: string; createdAt: string;
-  operation?: string; reason?: string; question?: string; archiveId?: string;
+  operation?: string; reason?: string; question?: string; archiveId?: string; pinned?: boolean; customTitle?: string;
 }
 type Candidate = {
   code: string; name: string; role: string; tags: string[]; reason: string;
@@ -163,6 +163,10 @@ function memberIcon(key: string) {
   return key === 'bull' ? TrendingUp : key === 'bear' ? TrendingDown : key === 'risk' ? ShieldCheck : key === 'judge' ? Gavel : FileText
 }
 
+function displayTitle(record: ReviewRecord) {
+  return record.customTitle || record.title || (record.mode === 'stock' ? '个股复盘' : '组合复盘')
+}
+
 function getArchiveFileName(archive: ArchiveRecord) {
   const basis = archive.taskTitle || archive.subject || archive.name
   return basis === archive.name ? archive.name : `${basis} / ${archive.name}`
@@ -227,6 +231,9 @@ export default function HomePage() {
   const [quotesAt, setQuotesAt] = useState<number | null>(null)
   const [plan, setPlan] = useState<PlanState>(() => getPlan())
   const [pricingOpen, setPricingOpen] = useState(false)
+  const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({})
+  const [renameTarget, setRenameTarget] = useState<ReviewRecord | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
 
   const scenario = live
     ? { input: query, interpretation: live.interpretation, strategy: live.strategy, candidates: live.candidates }
@@ -526,7 +533,7 @@ export default function HomePage() {
     setPlan(gate.plan)
     if (!gate.ok) { setReviewError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
     setReviewError(''); setReviewReportReady(true)
-    const record: ReviewRecord = { id: `${Date.now()}`, mode: reviewMode, title: reviewMode === 'stock' ? '中级宣传' : '组合部分', result: reviewResult, pnl: reviewPnl, source: reviewAnalysis.sourceTitle, createdAt: new Date().toISOString(), operation: reviewOperation, reason: reviewReason, question: reviewQuestion, archiveId: reviewArchive?.id }
+    const record: ReviewRecord = { id: `${Date.now()}`, mode: reviewMode, title: reviewArchive ? getArchiveFileName(reviewArchive) : (reviewMode === 'stock' ? '个股复盘' : '组合复盘'), result: reviewResult, pnl: reviewPnl, source: reviewAnalysis.sourceTitle, createdAt: new Date().toISOString(), operation: reviewOperation, reason: reviewReason, question: reviewQuestion, archiveId: reviewArchive?.id }
     setReviewRecords((items) => [record, ...items].slice(0, 12))
     window.setTimeout(() => document.querySelector('#review-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
   }
@@ -543,6 +550,58 @@ export default function HomePage() {
   }
   const deleteArchive = (id: string) => { setArchives((items) => items.filter((item) => item.id !== id)); setActiveArchive(null); setToast('留档已删除') }
   const handleUpgrade = () => { const next = upgradePlan(); setPlan(next); setPricingOpen(false); setToast('演示环境已开通专业版（未真实扣费）') }
+  const deleteReview = (id: string) => {
+    setReviewRecords((items) => items.filter((item) => item.id !== id))
+    if (renameTarget?.id === id) setRenameTarget(null)
+    setToast('复盘记录已删除')
+  }
+  const togglePinReview = (id: string) => {
+    setReviewRecords((items) => items.map((item) => item.id === id ? { ...item, pinned: !item.pinned } : item))
+    setToast('已更新收藏')
+  }
+  const openRename = (record: ReviewRecord) => { setRenameTarget(record); setRenameDraft(displayTitle(record)) }
+  const saveRename = () => {
+    const title = renameDraft.trim()
+    if (!title || !renameTarget) return
+    setReviewRecords((items) => items.map((item) => item.id === renameTarget.id ? { ...item, customTitle: title } : item))
+    setRenameTarget(null)
+    setToast('复盘名称已更新')
+  }
+  const toggleMonth = (month: string) => setCollapsedMonths((prev) => ({ ...prev, [month]: !prev[month] }))
+  const monthLabel = (month: string) => { const [y, m] = month.split('-'); return `${y} 年 ${Number(m)} 月` }
+  const dateLabel = (date: string) => { const [, m, d] = date.split('-'); return `${Number(m)} 月 ${Number(d)} 日` }
+  const reviewGroups = useMemo(() => {
+    const pinned: ReviewRecord[] = []
+    const byMonth = new Map<string, ReviewRecord[]>()
+    for (const record of [...reviewRecords].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))) {
+      if (record.pinned) { pinned.push(record); continue }
+      const month = (record.createdAt || '').slice(0, 7) || '未知月份'
+      byMonth.set(month, [...(byMonth.get(month) || []), record])
+    }
+    const months = [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([month, records]) => {
+      const byDate = new Map<string, ReviewRecord[]>()
+      for (const record of records) {
+        const date = (record.createdAt || '').slice(0, 10) || month
+        byDate.set(date, [...(byDate.get(date) || []), record])
+      }
+      return { month, records, dates: [...byDate.entries()].sort((a, b) => b[0].localeCompare(a[0])) }
+    })
+    return { pinned, months }
+  }, [reviewRecords])
+  const reviewRecordCard = (record: ReviewRecord) => (
+    <div className="review-record" key={record.id}>
+      <button className="review-record-main" onClick={() => openReviewRecord(record)}>
+        <div><strong>{displayTitle(record)}</strong><span>{record.mode === 'stock' ? '个股复盘' : '组合复盘'}{record.source ? ` · ${record.source}` : ''}</span></div>
+        <b className={record.result === '亏损' ? 'loss' : 'gain'}>{record.result} {record.pnl}</b>
+        <small>{new Date(record.createdAt).toLocaleString('zh-CN')} · 点击查看报告</small>
+      </button>
+      <div className="review-record-actions">
+        <button className={`icon-btn ${record.pinned ? 'pinned' : ''}`} onClick={() => togglePinReview(record.id)} aria-label={record.pinned ? '取消收藏' : '收藏置顶'} title={record.pinned ? '取消收藏' : '收藏置顶'}><Star size={13} fill={record.pinned ? 'currentColor' : 'none'}/></button>
+        <button className="icon-btn" onClick={() => openRename(record)} aria-label="重命名" title="重命名"><Pencil size={13}/></button>
+        <button className="icon-btn danger-icon" onClick={() => deleteReview(record.id)} aria-label="删除" title="删除"><Trash2 size={13}/></button>
+      </div>
+    </div>
+  )
 
   return <div className="app">
     <header className="topbar">
@@ -630,7 +689,7 @@ export default function HomePage() {
           <div className="ai-disclaimer"><ShieldCheck size={17}/><p>组合体检基于用户主动录入和 Mock 标的画像生成，只用于结构诊断与复核优先级排序，不构成投资建议，也不代表收益预测或上涨概率。</p></div></section>}
       </section> : view === 'review' ? <section className="review-page">
         <div className="portfolio-hero review-hero"><div><h1>复盘教练</h1></div><div className="portfolio-total high"><span>历史复盘</span><strong>{reviewRecords.length}</strong></div></div>
-        <div className="review-layout"><section className="panel review-input-panel"><div className="section-head"><div><span className="section-no">01 / 选择复盘类型</span><h2>个股复盘或组合复盘</h2><p>第一版不接真实成交。建议从留档进入复盘，对照当初的观察计划区分不可控行情和可优化动作。</p></div><Pill tone="mock">演示复盘</Pill></div><div className="mode-tabs review-tabs"><button className={reviewMode === 'stock' ? 'active' : ''} onClick={() => { setReviewMode('stock'); setReviewReportReady(false) }}><FileSearch size={16}/>个股复盘</button><button className={reviewMode === 'portfolio' ? 'active' : ''} onClick={() => { setReviewMode('portfolio'); setReviewReportReady(false) }}><PieChart size={16}/>组合复盘</button></div>{reviewMode === 'stock' && <div className="review-source"><span>复盘对象</span><strong>{reviewArchive ? getArchiveFileName(reviewArchive) : '未从留档选择，使用通用个股复盘'}</strong><small>建议从留档卡片点击“开始复盘”，可自动带入原观察计划。</small></div>}{reviewMode === 'portfolio' && <div className="review-source"><span>复盘对象</span><strong>{portfolioItems.length} 只组合名单</strong><small>{portfolioItems.length ? portfolioItems.map((item) => item.name).join('、') : '可先在组合体检中添加股票'}</small></div>}<label htmlFor="review-operation">实际操作过程</label><textarea id="review-operation" value={reviewOperation} onChange={(event) => { setReviewOperation(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><label htmlFor="review-reason">当时判断或心理原因</label><textarea id="review-reason" className="review-small-textarea" value={reviewReason} onChange={(event) => { setReviewReason(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><div className="review-result-row"><div><label>最终结果</label><select value={reviewResult} onChange={(event) => setReviewResult(event.target.value as '盈利' | '亏损' | '持平')}><option>盈利</option><option>亏损</option><option>持平</option></select></div><div><label htmlFor="review-pnl">盈亏幅度</label><input id="review-pnl" value={reviewPnl} onChange={(event) => setReviewPnl(event.target.value)} placeholder="例如 -3.6%"/></div></div><label htmlFor="review-question">想复盘的问题，可选</label><input id="review-question" value={reviewQuestion} onChange={(event) => setReviewQuestion(event.target.value)} placeholder="例如：这是行情问题还是纪律问题？"/>{reviewError && <div className="error"><AlertTriangle size={16}/><span>{reviewError}</span></div>}<button className="btn primary full" onClick={runReview}><ClipboardCheck size={16}/>生成复盘报告</button></section><aside className="panel review-history"><div className="section-head"><div><span className="section-no">历史复盘</span><h2>最近记录</h2></div></div>{reviewRecords.length === 0 ? <div className="portfolio-empty"><ClipboardCheck size={28}/><h3>暂无复盘记录</h3><p>生成一次复盘后会保存在当前浏览器。</p></div> : <div className="review-records">{reviewRecords.map((record) => <button className="review-record" key={record.id} onClick={() => openReviewRecord(record)}><div><strong>{record.mode === 'stock' ? '个股复盘' : '组合复盘'}</strong><span>{record.source}</span></div><b className={record.result === '亏损' ? 'loss' : 'gain'}>{record.result} {record.pnl}</b><small>{new Date(record.createdAt).toLocaleString('zh-CN')} · 点击查看报告</small></button>)}</div>}</aside></div>
+        <div className="review-layout"><section className="panel review-input-panel"><div className="section-head"><div><span className="section-no">01 / 选择复盘类型</span><h2>个股复盘或组合复盘</h2><p>第一版不接真实成交。建议从留档进入复盘，对照当初的观察计划区分不可控行情和可优化动作。</p></div><Pill tone="mock">演示复盘</Pill></div><div className="mode-tabs review-tabs"><button className={reviewMode === 'stock' ? 'active' : ''} onClick={() => { setReviewMode('stock'); setReviewReportReady(false) }}><FileSearch size={16}/>个股复盘</button><button className={reviewMode === 'portfolio' ? 'active' : ''} onClick={() => { setReviewMode('portfolio'); setReviewReportReady(false) }}><PieChart size={16}/>组合复盘</button></div>{reviewMode === 'stock' && <div className="review-source"><span>复盘对象</span><strong>{reviewArchive ? getArchiveFileName(reviewArchive) : '未从留档选择，使用通用个股复盘'}</strong><small>建议从留档卡片点击“开始复盘”，可自动带入原观察计划。</small></div>}{reviewMode === 'portfolio' && <div className="review-source"><span>复盘对象</span><strong>{portfolioItems.length} 只组合名单</strong><small>{portfolioItems.length ? portfolioItems.map((item) => item.name).join('、') : '可先在组合体检中添加股票'}</small></div>}<label htmlFor="review-operation">实际操作过程</label><textarea id="review-operation" value={reviewOperation} onChange={(event) => { setReviewOperation(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><label htmlFor="review-reason">当时判断或心理原因</label><textarea id="review-reason" className="review-small-textarea" value={reviewReason} onChange={(event) => { setReviewReason(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><div className="review-result-row"><div><label>最终结果</label><select value={reviewResult} onChange={(event) => setReviewResult(event.target.value as '盈利' | '亏损' | '持平')}><option>盈利</option><option>亏损</option><option>持平</option></select></div><div><label htmlFor="review-pnl">盈亏幅度</label><input id="review-pnl" value={reviewPnl} onChange={(event) => setReviewPnl(event.target.value)} placeholder="例如 -3.6%"/></div></div><label htmlFor="review-question">想复盘的问题，可选</label><input id="review-question" value={reviewQuestion} onChange={(event) => setReviewQuestion(event.target.value)} placeholder="例如：这是行情问题还是纪律问题？"/>{reviewError && <div className="error"><AlertTriangle size={16}/><span>{reviewError}</span></div>}<button className="btn primary full" onClick={runReview}><ClipboardCheck size={16}/>生成复盘报告</button></section><aside className="panel review-history"><div className="section-head"><div><span className="section-no">历史复盘</span><h2>最近记录</h2><p>按月收纳、可收起；支持收藏置顶、重命名与删除。</p></div></div>{reviewRecords.length === 0 ? <div className="portfolio-empty"><ClipboardCheck size={28}/><h3>暂无复盘记录</h3><p>生成一次复盘后会保存在当前浏览器。</p></div> : <div className="review-records">{reviewGroups.pinned.length > 0 && <section className="review-group pinned"><div className="review-group-head"><Star size={13}/><strong>收藏置顶</strong><span>{reviewGroups.pinned.length} 条</span></div><div className="review-group-body">{reviewGroups.pinned.map(reviewRecordCard)}</div></section>}{reviewGroups.months.map(({ month, records, dates }) => { const collapsed = collapsedMonths[month]; return <section className="review-group" key={month}><button className="review-group-head" onClick={() => toggleMonth(month)} aria-expanded={!collapsed}><ChevronRight size={14} className={collapsed ? '' : 'rotate'}/><strong>{monthLabel(month)}</strong><span>{records.length} 条</span></button>{!collapsed && <div className="review-group-body">{dates.map(([date, items]) => <div className="review-date-block" key={date}><div className="review-date-label">{dateLabel(date)}</div>{items.map(reviewRecordCard)}</div>)}</div>}</section>})}</div>}</aside></div>
         {reviewReportReady && <section id="review-report" className="review-report block"><div className="section-head"><div><span className="section-no">02 / 复盘报告</span><h2>{reviewAnalysis.targetName} · 结论</h2></div><Pill tone={reviewResult === '亏损' ? 'warning' : 'success'}>{reviewResult} {reviewPnl}</Pill></div><div className="review-conclusion"><h3>核心结论</h3><p>{reviewAnalysis.conclusion}</p></div><div className="review-grid review-insight-grid"><section className="report-card review-insight good"><h3><CheckCircle2 size={22}/>做得好的地方</h3><ul>{reviewAnalysis.positives.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight bad"><h3><AlertTriangle size={22}/>做得不好的地方</h3><ul>{reviewAnalysis.issues.map((item) => <li key={item}>{item}</li>)}</ul></section></div><div className="review-grid review-insight-grid"><section className="report-card review-insight unavoidable"><h3><ShieldQuestion size={22}/>无法提前控制</h3><ul>{reviewAnalysis.unavoidable.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight action"><h3><Target size={22}/>下次怎么做</h3><ul>{reviewAnalysis.nextActions.map((item) => <li key={item}>{item}</li>)}</ul></section></div><section className="report-card review-compare"><h3><FileText size={18}/>计划 vs 实际</h3><div className="compare-table">{reviewAnalysis.comparisons.map(([step, plan, actual, judgement]) => <div className="compare-row" key={step}><strong>{step}</strong><span>{plan}</span><span>{actual}</span><b className={judgement === '不可控' ? 'neutral' : 'warn'}>{judgement}</b></div>)}</div></section></section>}
       </section> : <section className="archive-page">
         <div className="archive-hero"><div><h1>留档</h1></div><div className="archive-count"><strong>{archives.length}</strong><span>份留档</span></div></div>
@@ -669,6 +728,7 @@ export default function HomePage() {
     {activeArchive && <div className="modal-layer"><div className="archive-detail-modal"><div className="archive-detail-head"><div><span className="section-no">完整留档</span><h2>{getArchiveFileName(activeArchive)}</h2><p>{activeArchive.code}</p><p>{activeArchive.query}</p></div><button className="icon-btn" onClick={() => setActiveArchive(null)} aria-label="关闭留档详情"><X size={18}/></button></div><div className="archive-detail-body"><section><div className="doc-title"><FileSearch size={18}/><div><span>文档 01</span><h3>研究分析</h3></div></div><div className="detail-summary"><div><span>分析任务</span><strong>{activeArchive.taskTitle || activeArchive.subject}</strong></div><div><span>综合判断</span><strong>{activeArchive.verdict}</strong></div><div><span>跟踪评分</span><strong>{activeArchive.score} / 100</strong></div></div><div className="detail-opinions">{(activeArchive.members?.length ? activeArchive.members : baseCommittee).map((member) => <div key={member.key}><span>{member.label}</span><p>{member.summary}</p></div>)}</div></section>{activeArchive.tradingSystemText && <section><div className="doc-title"><ShieldCheck size={18}/><div><span>规则快照</span><h3>我的交易系统</h3></div></div><p className="archived-system-text">{activeArchive.tradingSystemText}</p><div className="detail-summary"><div><span>规则更新时间</span><strong>{activeArchive.tradingSystemUpdatedAt ? new Date(activeArchive.tradingSystemUpdatedAt).toLocaleString('zh-CN') : '未记录'}</strong></div><div><span>系统原始结论</span><strong>{activeArchive.systemVerdict || '依据不足'}</strong></div></div></section>}<section><div className="doc-title"><FileText size={18}/><div><span>文档 02</span><h3>观察计划</h3></div></div><div className="detail-summary"><div><span>若条件触发</span><strong>首次 {activeArchive.initialPosition || '5%'} · 最高 {activeArchive.maxPosition || '10%'}</strong></div><div><span>触发 / 失效</span><strong>¥{activeArchive.entryPrice || 162} / ¥{activeArchive.stopPrice || 157}</strong></div><div><span>兑现观察区间</span><strong>{activeArchive.takeRange || '¥175 — ¥178'}</strong></div></div><p className="detail-note">{activeArchive.marketNote || '基于 2026-08-21 Mock 盘后快照，有效至 2026-09-01。到期后必须使用最新数据重新分析；价格触及不代表自动交易。'}</p></section></div><div className="archive-detail-actions"><button className="btn ghost" onClick={() => deleteArchive(activeArchive.id)}><Trash2 size={14}/>删除留档</button><button className="btn secondary" onClick={() => addArchiveToPortfolio(activeArchive)}><Plus size={14}/>加入组合</button><button className="btn secondary" onClick={() => startReviewFromArchive(activeArchive)}><ClipboardCheck size={14}/>开始复盘</button><button className="btn primary" onClick={() => { setActiveArchive(null); showAssistant(); setToast('已返回分析助手，可基于最新数据重新复核') }}><RefreshCw size={14}/>继续复核</button></div></div></div>}
 
     {pricingOpen && <div className="modal-layer"><div className="modal pricing-modal"><button className="icon-btn close" onClick={() => setPricingOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><BadgeCheck size={25}/></div><h2>Finance Penguin 会员方案</h2><p>当前为本地演示账户（{plan.name}）。免费版即可体验完整分析；升级专业版解锁不限次数的高级功能（演示环境不真实扣费）。</p><div className="pricing-grid"><div className={`pricing-card ${plan.tier === 'free' ? 'current' : ''}`}><h3>免费版</h3><div className="price">¥0<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {FREE_PREMIUM_QUOTA} 次</li><li>单日超 {FREE_DEGRADE_AFTER} 次请求自动降智</li></ul>{plan.tier === 'free' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn secondary" onClick={() => { setPricingOpen(false); setToast('已切回免费版') }}>切回免费版</button>}</div><div className={`pricing-card pro ${plan.tier === 'pro' ? 'current' : ''}`}><h3>专业版</h3><div className="price">¥29<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：不限次数</li><li>不降智，优先使用深度分析模型</li></ul>{plan.tier === 'pro' ? <button className="btn primary" disabled>已开通</button> : <button className="btn primary" onClick={handleUpgrade}>立即开通（演示）</button>}</div></div><div className="legal-note">演示环境不会真实扣费；正式版本将接入微信/支付宝订阅，并同步真实账号体系。</div></div></div>}
+    {renameTarget && <div className="modal-layer"><div className="modal"><button className="icon-btn close" onClick={() => setRenameTarget(null)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><Pencil size={25}/></div><h2>重命名复盘</h2><p>修改后的名称会显示在历史复盘列表中。</p><label htmlFor="rename-title">复盘名称</label><input id="rename-title" className="rename-input" value={renameDraft} onChange={(e) => setRenameDraft(e.target.value)} maxLength={40} placeholder="输入新的复盘名称"/><div className="modal-actions"><button className="btn ghost" onClick={() => setRenameTarget(null)}>取消</button><button className="btn primary" disabled={!renameDraft.trim()} onClick={saveRename}>保存</button></div></div></div>}
     {toast && <div className="toast" role="status" aria-live="assertive"><CheckCircle2 size={20}/><div><strong>{toast}</strong><span>本次观点、验证标的、综合判断和观察计划已保存</span><button onClick={showArchives}>前往留档查看</button></div><button className="toast-close" onClick={() => setToast('')} aria-label="关闭提示"><X size={15}/></button></div>}
   </div>
 }
