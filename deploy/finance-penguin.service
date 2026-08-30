@@ -1,0 +1,14 @@
+[Unit]
+Description=Finance Penguin demo server (AI proxy + static)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/finance-penguin
+EnvironmentFile=/opt/finance-penguin/.env.local
+ExecStart=/usr/bin/node server/proxy.mjs
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
