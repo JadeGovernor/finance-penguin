@@ -1,4 +1,4 @@
-// Finance Penguin 本地演示服务：静态托管 dist/ + DeepSeek AI 代理。
+// Finance Penguin 服务端：静态托管 dist/ + DeepSeek AI 代理。
 // 运行：npm run build && npm run demo   →   http://127.0.0.1:8787
 // key 解析顺序：环境变量 DEEPSEEK_API_KEY > 项目 .env.local > OpenClaw 本地存储（自动）。
 import http from 'node:http'
@@ -85,7 +85,7 @@ function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetS
   if (targetStock?.code) lines.push(`指定个股（已解析，其行情已含于下方快照）：${targetStock.name}（${targetStock.code}）`)
   lines.push(`实时行情快照（JSON）：${JSON.stringify(quotes || [])}`)
   lines.push(`当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`)
-  if (degraded) lines.push('当前处于降智模式：请使用更精炼的语言，每条结论不超过 2 句话，减少篇幅。')
+  if (degraded) lines.push('当前处于轻量模式：请使用更精炼的语言，每条结论不超过 2 句话，减少篇幅。')
   return lines.join('\n')
 }
 
@@ -262,7 +262,7 @@ async function handleResolve(req, res) {
 }
 
 function serveStatic(req, res) {
-  // 站点 base 为 /finance-penguin/：本地演示也按该前缀提供服务
+  // 站点 base 为 /finance-penguin/：按该前缀提供静态资源
   const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
   let clean = urlPath
   if (clean === '/finance-penguin' || clean === '/finance-penguin/') clean = '/'

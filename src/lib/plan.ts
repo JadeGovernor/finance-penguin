@@ -1,4 +1,4 @@
-// 本地演示账户与付费分层：免费版 / 专业版（29 元/月，演示不真实扣费）。
+// 会员方案与付费分层：免费版 / 专业版（29 元/月）。
 import { storageGet, storageSet } from './storage'
 
 const STORAGE_KEY = 'fp-user'
@@ -20,7 +20,7 @@ function today(): string {
 }
 
 function defaultPlan(): PlanState {
-  return { name: '演示用户', tier: 'free', createdAt: new Date().toISOString(), premiumUsed: 0, analysisDate: today(), analysisCount: 0 }
+  return { name: '本地用户', tier: 'free', createdAt: new Date().toISOString(), premiumUsed: 0, analysisDate: today(), analysisCount: 0 }
 }
 
 function save(plan: PlanState) {
@@ -50,7 +50,7 @@ export function tryUsePremium(plan: PlanState): { ok: boolean; plan: PlanState; 
   return { ok: true, plan: next, remaining: remaining - 1 }
 }
 
-/** 记录一次分析请求；免费版单日超过 100 次后降智。 */
+/** 记录一次分析请求，并判断本次是否以轻量模式运行。 */
 export function trackAnalysis(plan: PlanState): { plan: PlanState; count: number; degraded: boolean } {
   const date = today()
   const base = plan.analysisDate === date ? plan : { ...plan, analysisDate: date, analysisCount: 0 }

@@ -20,6 +20,6 @@ export async function resolveStock(text: string): Promise<ResolvedStock | null> 
   }
   if (res.status === 404) return null
   const data: { error?: string } = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || 'AI 服务未连接：请在本地运行 `npm run demo:build` 后通过 http://127.0.0.1:8787 使用完整 AI 功能。')
+  if (!res.ok) throw new Error(data.error || 'AI 服务暂不可用，请稍后重试。')
   return data as ResolvedStock
 }

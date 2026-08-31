@@ -73,7 +73,7 @@ export async function runAnalysis(opts: AnalyzeOptions): Promise<AnalysisResult>
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new Error('AI 分析超时（超过 3 分钟仍未返回），DeepSeek 当前响应较慢，请重试。')
     }
-    throw new Error('AI 服务未连接。请在本机运行 `npm run demo:build` 后，通过 http://127.0.0.1:8787 访问本页。')
+    throw new Error('AI 服务暂不可用，请稍后重试。')
   }
   let data: { result?: AnalysisResult; error?: string; raw?: string } = {}
   try { data = await res.json() } catch { /* ignore */ }
