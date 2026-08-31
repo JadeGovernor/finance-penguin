@@ -47,3 +47,13 @@
 - 验证：lint/tsc/build 通过；浏览器端到端「绿地谐波」成功（AI 识别 → 真实行情 → 委员会 → 综合判断 57 分）；curl 四类输入符合预期。
 - 部署：main `9e170ba`，gh-pages `81c5a7f`（线上 bundle `index-Cjg2FXFB.js`）。
 - 遗留：线上 AI 可用性取决于 serverless 代理是否部署（本机无 wrangler/vercel，需用户账号授权）。
+
+### 2026-08-31 22:50
+- 方案二落地：腾讯云轻量服务器（北京，2C2G Ubuntu 22.04.5）部署线上完整版：
+  - 免密登录：控制台密钥对（codex.pem）绑定实例，root 密码登录被拒（SSH 配置不允许）→ 改用密钥免密。
+  - Node 20.18.0 装 /usr/local（npmmirror 二进制）；npm 源切 npmmirror。
+  - 踩坑：package-lock.json 依赖 URL 指向快手内网源（npm.corp.kuaishou.com）→ 服务器 ENOTFOUND；且 @codeflicker/appwrite 为快手私有包公开源 404 → 从项目移除该未使用的二期预留依赖（删除 src/lib/appwrite.ts + package.json 依赖），lock 批量 sed 替换源域名后安装成功（572 包）。
+  - systemd 服务 finance-penguin（/opt/finance-penguin，User=ubuntu，EnvironmentFile=.env.local，DEEPSEEK_API_KEY 来自本机 OpenClaw 存储，未落仓库）。
+  - 验证：/api/health ok + keyConfigured；页面 200；/api/resolve「绿地谐波」→ 688017.SH；/api/analyze 完整分析成功（绿的谐波 ¥300.49 +2.91% 盘中实时，综合判断 65 分）。
+  - 公网地址：http://49.232.16.132:8787/finance-penguin/（需控制台防火墙放行 8787）。
+- 待办：控制台放行 8787 后公网验证；本地 git push（网络此前不通，需补推 831c4b0/13dba6a/移除 appwrite 变更）。

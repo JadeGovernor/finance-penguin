@@ -12,7 +12,6 @@
     "demo:build": "npm run build && npm run demo"
   },
   "dependencies": {
-    "@codeflicker/appwrite": "latest",
     "@fontsource-variable/geist": "5.2.8",
     "@radix-ui/react-slot": "1.2.4",
     "class-variance-authority": "0.7.1",
