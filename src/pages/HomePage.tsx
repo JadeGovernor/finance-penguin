@@ -189,6 +189,7 @@ export default function HomePage() {
   const [stage, setStage] = useState<Stage>('input')
   const [loading, setLoading] = useState(false)
   const [loadingLabel, setLoadingLabel] = useState('分析中')
+  const [loadingElapsed, setLoadingElapsed] = useState(0)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Candidate | null>(null)
   const [committeeTick, setCommitteeTick] = useState(-1)
@@ -424,6 +425,13 @@ export default function HomePage() {
   }
 
   useEffect(() => { void loadQuotes() }, [])
+
+  useEffect(() => {
+    if (!loading) { setLoadingElapsed(0); return }
+    const start = Date.now()
+    const timer = window.setInterval(() => setLoadingElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [loading])
 
   const refreshMarket = () => {
     reset()
@@ -675,7 +683,7 @@ export default function HomePage() {
         {isStockMode && <details className="stock-extra"><summary>补充你的判断 / 方向 / 时间（可选）</summary><textarea id="stock-extra-note" value={extraNote} onChange={(event) => setExtraNote(event.target.value)} placeholder="例如：关注机器人减速器赛道，未来一周观察回踩支撑后的承接力度" rows={2}/></details>}
         {error && <div className="error"><AlertTriangle size={16}/><span>{error}</span></div>}
         <div className="input-examples"><span>切换示例</span><button onClick={() => switchMode('thesis')}>AI 基础设施资本开支</button><button onClick={() => switchMode('stock')}>贵州茅台一周修复</button></div>
-        <div className="input-footer"><span><Info size={14}/>东财 + 腾讯实时行情</span><button className="btn primary discover-btn" disabled={loading} onClick={discover}>{loading ? <><RefreshCw className="spin" size={16}/>{loadingLabel}</> : <><Search size={16}/>{isStockMode ? '开始分析' : '发现标的'}</>}</button></div>
+        <div className="input-footer"><span><Info size={14}/>东财 + 腾讯实时行情 · AI 完整分析约需 30-90 秒</span><button className="btn primary discover-btn" disabled={loading} onClick={discover}>{loading ? <><RefreshCw className="spin" size={16}/>{loadingLabel}{loadingElapsed >= 5 ? <em className="elapsed"> {loadingElapsed}s</em> : null}</> : <><Search size={16}/>{isStockMode ? '开始分析' : '发现标的'}</>}</button></div>
       </section>
 
       {stage !== 'input' && <section className="interpretation"><div className="interpret-title"><BadgeCheck size={17}/>您的观点概览</div><div className="interpret-grid">{Object.entries(scenario.interpretation).map(([key, value]) => <div key={key}><span>{{ subject: '关注方向', direction: '您的判断', horizon: '关注周期', catalyst: '潜在催化', unknown: '待确认信息' }[key]}</span><strong>{value}</strong></div>)}</div></section>}

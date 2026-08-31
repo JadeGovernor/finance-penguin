@@ -13,9 +13,10 @@ export async function resolveStock(text: string): Promise<ResolvedStock | null> 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: text }),
+      signal: AbortSignal.timeout(60_000),
     })
   } catch {
-    throw new Error('AI 服务未连接。请在本机运行 `npm run demo:build` 后，通过 http://127.0.0.1:8787 访问本页。')
+    throw new Error('股票识别超时或服务未连接，请重试或直接输入 6 位代码。')
   }
   if (res.status === 404) return null
   const data: { error?: string } = await res.json().catch(() => ({}))

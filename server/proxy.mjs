@@ -12,6 +12,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = join(__dirname, '..')
 const DIST = join(ROOT, 'dist')
 const PORT = Number(process.env.PORT || 8787)
+const HOST = process.env.HOST || '127.0.0.1'
 const MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash'
 
 function resolveDeepSeekKey() {
@@ -108,10 +109,12 @@ async function callDeepSeek(key, messages, degraded) {
     max_tokens: degraded ? 3000 : 10000,
     response_format: { type: 'json_object' },
   }
+  const signal = AbortSignal.timeout(180_000)
   let res = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify(payload),
+    signal,
   })
   if (res.status === 400) {
     // 部分模型不支持 response_format 时重试一次
@@ -120,6 +123,7 @@ async function callDeepSeek(key, messages, degraded) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(payload),
+      signal,
     })
   }
   const data = await res.json()
@@ -204,10 +208,12 @@ async function resolveWithDeepSeek(key, text) {
   ]
   for (let attempt = 0; attempt < 2; attempt++) {
     const payload = { model: MODEL, messages, temperature: 0, max_tokens: 300, response_format: { type: 'json_object' } }
+    const signal = AbortSignal.timeout(30_000)
     let res = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(payload),
+      signal,
     })
     if (res.status === 400) {
       delete payload.response_format
@@ -215,6 +221,7 @@ async function resolveWithDeepSeek(key, text) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify(payload),
+        signal,
       })
     }
     if (!res.ok) continue
@@ -284,11 +291,11 @@ const server = http.createServer((req, res) => {
   return serveStatic(req, res)
 })
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, HOST, () => {
   const keyOk = Boolean(resolveDeepSeekKey())
   console.log('')
-  console.log('  Finance Penguin 本地演示服务已启动')
-  console.log(`  → http://127.0.0.1:${PORT}`)
+  console.log(`  Finance Penguin 服务已启动（监听 ${HOST}:${PORT}）`)
+  console.log(`  → http://${HOST}:${PORT}`)
   console.log(`  AI 模型：${MODEL} · DeepSeek key：${keyOk ? '已配置（未显示）' : '未配置'}`)
   console.log(`  dist 静态资源：${existsSync(join(DIST, 'index.html')) ? '就绪' : '缺失（请先运行 npm run build）'}`)
   console.log('')
