@@ -55,5 +55,14 @@
   - 踩坑：package-lock.json 依赖 URL 指向快手内网源（npm.corp.kuaishou.com）→ 服务器 ENOTFOUND；且 @codeflicker/appwrite 为快手私有包公开源 404 → 从项目移除该未使用的二期预留依赖（删除 src/lib/appwrite.ts + package.json 依赖），lock 批量 sed 替换源域名后安装成功（572 包）。
   - systemd 服务 finance-penguin（/opt/finance-penguin，User=ubuntu，EnvironmentFile=.env.local，DEEPSEEK_API_KEY 来自本机 OpenClaw 存储，未落仓库）。
   - 验证：/api/health ok + keyConfigured；页面 200；/api/resolve「绿地谐波」→ 688017.SH；/api/analyze 完整分析成功（绿的谐波 ¥300.49 +2.91% 盘中实时，综合判断 65 分）。
-  - 公网地址：http://49.232.16.132:8787/finance-penguin/（需控制台防火墙放行 8787）。
+- 公网地址：http://49.232.16.132:8787/finance-penguin/（需控制台防火墙放行 8787）。
 - 待办：控制台放行 8787 后公网验证；本地 git push（网络此前不通，需补推 831c4b0/13dba6a/移除 appwrite 变更）。
+
+### 2026-08-31 22:55
+- Token 成本测算（替代此前笼统的 ¥6.72/用户/月）：`docs/token-cost-model.md`，按 DeepSeek 官方最新计价（deepseek-v4-flash，2026-08-31 抓取）与实测 token 数分档测算。
+  - 计价：输入命中缓存 $0.007/1M（off-peak）/ $0.014（peak）；未命中 $0.22/$0.44；输出 $0.66/$1.32；peak = 北京工作日 9-12、14-18，其余半价；汇率 7.2。
+  - 单次：完整分析 ≈8,000 tokens（3,500 入 + 4,500 出）≈¥0.024（off-peak）；降智 ≈6,000 ≈¥0.015；resolve ≈400 ≈¥0.001。
+  - 免费版：典型 36 次/月 ≈288k ≈¥0.9-1.7；重度 110 次/月 ≈760k ≈¥2.1-4.1；极端滥用 3,000 次/月 ≈¥72（风控边界，附说明）。
+  - 进阶版（假设 ¥9.9/月、50 次高级/月、不降智，待确认）：典型 ≈480k ≈¥1.5-2.9；重度 ≈1.2M ≈¥3.6-7.3。
+  - 专业版（¥29/月）：典型 90 次 ≈720k ≈¥2.2-4.4；重度 280 次 ≈2.24M ≈¥6.8-13.5（毛利率 >50%）。
+  - 口径：组合体检/复盘当前为前端模板不耗 token，按最终版接入真实 AI 估算；PRD 4.7 目前仅免费/专业两档，进阶版定价与配额需产品确认。
