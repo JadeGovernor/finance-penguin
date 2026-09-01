@@ -6,7 +6,7 @@ import {
   ShieldQuestion, Star, Target, Trash2, TrendingDown, TrendingUp, X,
 } from 'lucide-react'
 
-import { fetchQuotes, type Quote } from '@/lib/quotes'
+import { fetchQuotes, stockNameMatch, type Quote } from '@/lib/quotes'
 import { runAnalysis, type AnalysisResult, type AnalysisMember } from '@/lib/ai'
 import { resolveStock } from '@/lib/resolve'
 import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, type PlanState } from '@/lib/plan'
@@ -467,7 +467,7 @@ export default function HomePage() {
           try {
             const quoteResult = await fetchQuotes([resolved.code])
             const quote = quoteResult[resolved.code]
-            if (quote) {
+            if (quote && stockNameMatch(quote.name, resolved.name)) {
               setQuotes((prev) => ({ ...prev, ...quoteResult }))
               setQuotesAt(Date.now())
               snapshotQuotes = [...Object.values(quotes), quote]

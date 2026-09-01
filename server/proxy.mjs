@@ -88,6 +88,7 @@ function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetS
     : `指定个股（已解析，其行情已含于下方快照）：${targetStock.name}（${targetStock.code}）`)
   if (unresolved) {
     lines.push('⚠️ AI 直判模式：未能获取目标股票的实时行情（名称无法识别或行情源无数据）。本模式覆盖系统规则 3：请根据你的知识自行判断用户输入最可能指代的 A 股（允许纠正明显错别字、模糊简称），直接给出结构化分析；候选列表可基于你的知识生成，把最可能的一只放首位，再配 1~2 只对照；若完全无法确定对应标的，请在第一只候选 name 中写明「待确认标的」并在 analysis/unknown 中说明原因，不要硬编造股票代码。')
+    lines.push('注意：当前是 2026 年 9 月，A 股常有新上市公司（如宇树科技 688836.SH 已在科创板上市）。不要凭你的旧知识断言某公司「未上市」；无法确认时写「无法确认对应标的」并说明可能是错别字、简称或新上市，而不是断言其不存在。')
     lines.push('实时价格约束：你没有实时行情时，candidates 的 price/change 一律填 0，plan 的 entryPrice/stopPrice 填 0、takeRange 写「待行情确认」，并在 reason 或 marketNote 中注明「未获取实时行情，价格未验证」；禁止虚构任何价格与涨跌幅。')
   }
   lines.push(`实时行情快照（JSON）：${JSON.stringify(quotes || [])}`)
@@ -208,9 +209,36 @@ async function resolveFromEastmoney(text) {
   return null
 }
 
+function stockNameMatch(a, b) {
+  const norm = (s) => String(s || '').replace(/\s+/g, '').replace(/-[A-Za-z0-9]+$/g, '').toLowerCase()
+  const x = norm(a)
+  const y = norm(b)
+  if (!x || !y) return false
+  return x === y || x.includes(y) || y.includes(x)
+}
+
+async function verifyQuoteName(code, expectedName) {
+  try {
+    const m = String(code || '').toUpperCase().match(/^(\d{6})\.(SH|SZ|BJ)$/)
+    if (!m) return null
+    const secid = `${m[2] === 'SH' ? 1 : 0}.${m[1]}`
+    const res = await fetch(`https://push2.eastmoney.com/api/qt/ulist.np/get?secids=${secid}&fields=f12,f14&fltt=2`, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    const item = data?.data?.diff?.[0]
+    if (!item?.f14) return null
+    return stockNameMatch(item.f14, expectedName)
+  } catch {
+    return null
+  }
+}
+
 async function resolveWithDeepSeek(key, text) {
   const messages = [
-    { role: 'system', content: '你是 A 股股票识别器。把用户输入解析为一只 A 股股票，可纠正明显错别字（例如「绿地谐波」→「绿的谐波」）。只输出紧凑 JSON：{"code":"688017.SH","name":"绿的谐波"}；无法确定时输出 {"code":"","name":""}。' },
+    { role: 'system', content: '你是 A 股股票识别器。把用户输入解析为一只 A 股股票，可纠正明显错别字、谐音与模糊简称（例如「绿地谐波」→「绿的谐波」，「语数科技」→「宇树科技」）。注意：当前是 2026 年 9 月，A 股常有新上市公司（如宇树科技已在科创板上市，代码 688836.SH），不要凭旧知识断定某公司未上市。只输出紧凑 JSON：{"name":"","code":""}。name 填你判断的最可能股票名称（可留空）；code 填 6 位代码+市场后缀（如 688836.SH），只有当你相当确定时才填，不确定就留空字符串，不要编造。' },
     { role: 'user', content: `用户输入：${text}` },
   ]
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -234,8 +262,12 @@ async function resolveWithDeepSeek(key, text) {
     if (!res.ok) continue
     const data = await res.json()
     const parsed = extractJson(data?.choices?.[0]?.message?.content || '')
-    if (parsed && /^\d{6}\.(SH|SZ|BJ)$/.test(String(parsed.code || ''))) {
-      return { code: String(parsed.code), name: String(parsed.name || text.trim()), market: String(parsed.code).slice(-2) }
+    if (parsed) {
+      const code = String(parsed.code || '').trim().toUpperCase()
+      return {
+        code: /^\d{6}\.(SH|SZ|BJ)$/.test(code) ? code : '',
+        name: String(parsed.name || '').trim() || text.trim(),
+      }
     }
   }
   return null
@@ -250,20 +282,35 @@ async function handleResolve(req, res) {
   const direct = parseDirectCode(input)
   if (direct) return json(res, 200, { ...direct, source: 'direct' })
 
-  // AI 判断优先：能纠正错别字、识别模糊名称（如「绿地谐波」→「绿的谐波 688017.SH」）
+  // AI 判断优先：纠正错别字/谐音/简称（如「语数科技」→「宇树科技」）
   const key = resolveDeepSeekKey()
+  let ds = null
   if (key) {
-    try {
-      const ds = await resolveWithDeepSeek(key, input)
-      if (ds) return json(res, 200, { ...ds, source: 'deepseek' })
-    } catch { /* 继续机器兜底 */ }
+    try { ds = await resolveWithDeepSeek(key, input) } catch { ds = null }
   }
 
-  // 机器识别兜底：AI 不可用或失败时，用东财 suggest 处理标准名称/拼音/代码
-  try {
-    const em = await resolveFromEastmoney(input)
-    if (em) return json(res, 200, { ...em, source: 'eastmoney' })
-  } catch { /* 落入未识别 */ }
+  // 1) 用 AI 纠正后的名称去东财搜索：东财搜索是权威的名称→代码映射，避免 AI 编造代码
+  let best = null
+  if (ds?.name && ds.name !== input.trim()) {
+    try {
+      const em = await resolveFromEastmoney(ds.name)
+      if (em) best = { ...em, source: 'deepseek' }
+    } catch { /* ignore */ }
+  }
+  // 2) 直接用原始输入搜索（标准名称/拼音/代码）
+  if (!best) {
+    try {
+      const em = await resolveFromEastmoney(input)
+      if (em) best = { ...em, source: 'eastmoney' }
+    } catch { /* ignore */ }
+  }
+  // 3) AI 给出代码时，用实时行情接口校验代码与名称是否一致（防止 AI 编造/错配代码）
+  if (!best && ds?.code) {
+    const match = await verifyQuoteName(ds.code, ds.name || input)
+    if (match !== false) best = { code: ds.code, name: ds.name || input.trim(), source: 'deepseek' }
+  }
+
+  if (best) return json(res, 200, best)
 
   return json(res, 404, { error: `未能识别「${input.trim()}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。` })
 }

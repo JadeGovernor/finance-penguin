@@ -15,6 +15,15 @@ export function normalizeCode(code: string): string {
   return code.toLowerCase()
 }
 
+// 名称模糊匹配：忽略空格与 -W/-U/-N 等后缀（如「宇树科技」≈「宇树科技-W」）
+export function stockNameMatch(a: string, b: string): boolean {
+  const norm = (s: string) => s.replace(/\s+/g, '').replace(/-[A-Za-z0-9]+$/g, '').toLowerCase()
+  const x = norm(a)
+  const y = norm(b)
+  if (!x || !y) return false
+  return x === y || x.includes(y) || y.includes(x)
+}
+
 export function toEastmoneySecid(code: string): string {
   const m = code.toUpperCase().match(/^(\d{6})\.(SH|SZ|BJ)$/)
   if (!m) return ''
