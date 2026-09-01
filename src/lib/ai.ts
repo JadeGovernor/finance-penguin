@@ -57,6 +57,7 @@ export type AnalyzeOptions = {
   quotes: Quote[]
   degraded?: boolean
   targetStock?: { code: string; name: string; price?: number; changePct?: number }
+  unresolved?: boolean
 }
 
 export async function runAnalysis(opts: AnalyzeOptions): Promise<AnalysisResult> {

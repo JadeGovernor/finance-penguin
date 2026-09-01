@@ -78,12 +78,18 @@ const SYSTEM_PROMPT = `你是「Finance Penguin」A 股投研假设验证台的�
 输出 JSON 结构：
 {"interpretation":{"subject":"","direction":"","horizon":"","catalyst":"","unknown":""},"strategy":"","candidates":[{"code":"600519.SH","name":"","role":"","tags":[],"reason":"","difference":"","doubt":"","price":0,"change":0,"score":0}],"members":[{"key":"bull","label":"乐观研究员","tone":"positive","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[{"id":"E-01","name":"","date":"","url":""}],"gap":""},{"key":"bear","label":"悲观研究员","tone":"negative","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"risk","label":"风控委员","tone":"warning","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"judge","label":"裁决官","tone":"accent","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""}],"scores":[{"label":"逻辑强度","value":0,"help":""},{"label":"证据完整度","value":0,"help":""},{"label":"兑现程度","value":0,"help":""},{"label":"市场拥挤度","value":0,"help":""},{"label":"风险可控度","value":0,"help":""}],"verdict":{"title":"","conclusion":"","score":0,"deduction":""},"plan":{"entryPrice":0,"stopPrice":0,"takeRange":"","initialPosition":"5%","maxPosition":"10%","focus":[],"satisfy":[],"reduce":[],"cancel":[],"pending":[]},"marketNote":""}`
 
-function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock }) {
+function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved }) {
   const lines = [
     `用户输入（${mode === 'stock' ? '指定个股' : '市场观点'}）：${input}`,
   ]
   if (tradingSystem) lines.push(`用户保存的交易系统原文：${tradingSystem}`)
-  if (targetStock?.code) lines.push(`指定个股（已解析，其行情已含于下方快照）：${targetStock.name}（${targetStock.code}）`)
+  if (targetStock?.code) lines.push(unresolved
+    ? `已解析目标个股（但未能获取其实时行情）：${targetStock.name}（${targetStock.code}）`
+    : `指定个股（已解析，其行情已含于下方快照）：${targetStock.name}（${targetStock.code}）`)
+  if (unresolved) {
+    lines.push('⚠️ AI 直判模式：未能获取目标股票的实时行情（名称无法识别或行情源无数据）。本模式覆盖系统规则 3：请根据你的知识自行判断用户输入最可能指代的 A 股（允许纠正明显错别字、模糊简称），直接给出结构化分析；候选列表可基于你的知识生成，把最可能的一只放首位，再配 1~2 只对照；若完全无法确定对应标的，请在第一只候选 name 中写明「待确认标的」并在 analysis/unknown 中说明原因，不要硬编造股票代码。')
+    lines.push('实时价格约束：你没有实时行情时，candidates 的 price/change 一律填 0，plan 的 entryPrice/stopPrice 填 0、takeRange 写「待行情确认」，并在 reason 或 marketNote 中注明「未获取实时行情，价格未验证」；禁止虚构任何价格与涨跌幅。')
+  }
   lines.push(`实时行情快照（JSON）：${JSON.stringify(quotes || [])}`)
   lines.push(`当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`)
   if (degraded) lines.push('当前处于轻量模式：请使用更精炼的语言，每条结论不超过 2 句话，减少篇幅。')
@@ -138,12 +144,12 @@ async function handleAnalyze(req, res) {
   }
   let body
   try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
-  const { input, mode, tradingSystem, quotes, degraded, targetStock } = body || {}
-  if (!input || typeof input !== 'string' || input.trim().length < 4) return json(res, 400, { error: '缺少输入内容' })
+  const { input, mode, tradingSystem, quotes, degraded, targetStock, unresolved } = body || {}
+  if (!input || typeof input !== 'string' || input.trim().length < 2) return json(res, 400, { error: '缺少输入内容' })
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock }) },
+    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved }) },
   ]
   try {
     const { res: upstream, data } = await callDeepSeek(key, messages, Boolean(degraded))

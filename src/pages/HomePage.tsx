@@ -236,6 +236,7 @@ export default function HomePage() {
   const [quotesAt, setQuotesAt] = useState<number | null>(null)
   const [plan, setPlan] = useState<PlanState>(() => getPlan())
   const [pricingOpen, setPricingOpen] = useState(false)
+  const [directNote, setDirectNote] = useState('')
   const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({})
   const [renameTarget, setRenameTarget] = useState<ReviewRecord | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -406,7 +407,7 @@ export default function HomePage() {
     setMode(nextMode)
     setQuery(nextMode === 'thesis' ? themeScenario.input : stockScenario.input)
     setExtraNote('')
-    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null)
+    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null); setDirectNote('')
   }
 
   const loadQuotes = async (codes?: string[]) => {
@@ -455,34 +456,61 @@ export default function HomePage() {
       let targetStock: { code: string; name: string; price?: number; changePct?: number } | undefined
       let analyzeInput = text
       let snapshotQuotes: Quote[] = Object.values(quotes)
+      let unresolved = false
       if (isStockMode) {
         setLoadingLabel('正在识别股票…')
-        const resolved = await resolveStock(text)
-        if (!resolved?.code) { setError(`未能识别「${text}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。`); return }
-        targetStock = resolved
-        setLoadingLabel('正在获取实时行情…')
-        let quoteResult: Record<string, Quote> = {}
-        try { quoteResult = await fetchQuotes([resolved.code]) } catch { /* 按未获取处理 */ }
-        const quote = quoteResult[resolved.code]
-        if (!quote) { setError(`未获取到 ${resolved.name} 的实时行情，请确认代码后重试。`); return }
-        setQuotes((prev) => ({ ...prev, ...quoteResult }))
-        setQuotesAt(Date.now())
-        snapshotQuotes = [...Object.values(quotes), quote]
+        let resolved: { code: string; name: string } | null = null
+        try { resolved = await resolveStock(text) } catch { /* 识别失败 → AI 直判兜底 */ }
+        if (resolved?.code) {
+          targetStock = { code: resolved.code, name: resolved.name }
+          setLoadingLabel('正在获取实时行情…')
+          try {
+            const quoteResult = await fetchQuotes([resolved.code])
+            const quote = quoteResult[resolved.code]
+            if (quote) {
+              setQuotes((prev) => ({ ...prev, ...quoteResult }))
+              setQuotesAt(Date.now())
+              snapshotQuotes = [...Object.values(quotes), quote]
+              targetStock = { code: resolved.code, name: resolved.name, price: quote.price, changePct: quote.changePct }
+            } else {
+              unresolved = true
+            }
+          } catch { unresolved = true }
+        } else {
+          unresolved = true
+        }
         const note = extraNote.trim()
-        analyzeInput = note ? `个股：${resolved.name}（${resolved.code}）。补充判断：${note}` : `个股：${resolved.name}（${resolved.code}）`
+        analyzeInput = note ? `个股：${text}。补充判断：${note}` : `个股：${text}`
+        if (unresolved) setLoadingLabel('未能识别代码或未取到行情，AI 直判中…')
       }
 
       setLoadingLabel('AI 分析中…')
-      const result = await runAnalysis({ input: analyzeInput, mode, tradingSystem: tradingSystem?.text, quotes: snapshotQuotes, degraded: tracked.degraded, targetStock })
+      const result = await runAnalysis({ input: analyzeInput, mode, tradingSystem: tradingSystem?.text, quotes: snapshotQuotes, degraded: tracked.degraded, targetStock, unresolved })
       setLive(result)
       if (result.candidates.length) loadQuotes(result.candidates.map((c) => c.code))
       if (isStockMode) {
-        const target = result.candidates.find((c) => c.code === targetStock?.code)
-        if (!result.candidates.length || !target) {
-          setError('本次未生成有效候选标的，请重试。')
+        const target = unresolved ? result.candidates[0] : result.candidates.find((c) => c.code === targetStock?.code)
+        if (target) {
+          if (unresolved) setDirectNote('AI 直判模式：未能识别该股票代码或未获取到实时行情，以下结论基于 AI 知识与公开信息生成，价格未经实时行情验证。')
+          startCommittee(target)
           return
         }
-        startCommittee(target)
+        if (unresolved) {
+          const placeholder: Candidate = {
+            code: targetStock?.code || '',
+            name: result.interpretation.subject || '待确认标的',
+            role: 'AI 直判',
+            tags: ['未获取实时行情'],
+            reason: result.verdict.conclusion || '由 AI 基于公开信息直接研判，未获取实时行情。',
+            difference: '',
+            doubt: '标的识别与行情数据未验证，请以官方公开信息和实时行情为准。',
+            price: 0, change: 0, score: result.verdict.score ?? 0,
+          }
+          setDirectNote('AI 直判模式：未能识别该股票代码或未获取到实时行情，以下结论基于 AI 知识与公开信息生成，价格未经实时行情验证。')
+          startCommittee(placeholder)
+          return
+        }
+        setError('本次未生成有效候选标的，请重试。')
         return
       }
       setStage('candidates')
@@ -501,7 +529,7 @@ export default function HomePage() {
 
   const openRisk = () => { setAcknowledged(false); setRiskModal(true) }
   const createCard = () => { if (!acknowledged) return; setRiskModal(false); setJustArchived(false); setCardOpen(true) }
-  const reset = () => { setView('assistant'); setStage('input'); setSelected(null); setCommitteeTick(-1); setCardOpen(false); setError(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  const reset = () => { setView('assistant'); setStage('input'); setSelected(null); setCommitteeTick(-1); setCardOpen(false); setError(''); setDirectNote(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }
   const saveArchive = () => {
     if (!selected) return
     const now = new Date().toISOString()
@@ -685,6 +713,7 @@ export default function HomePage() {
         <div className="input-footer"><span><Info size={14}/>东财 + 腾讯实时行情 · AI 完整分析约需 30-90 秒</span><button className="btn primary discover-btn" disabled={loading} onClick={discover}>{loading ? <><RefreshCw className="spin" size={16}/>{loadingLabel}{loadingElapsed >= 5 ? <em className="elapsed"> {loadingElapsed}s</em> : null}</> : <><Search size={16}/>{isStockMode ? '开始分析' : '发现标的'}</>}</button></div>
       </section>
 
+      {directNote && <div className="direct-note"><AlertTriangle size={16}/><span>{directNote}</span></div>}
       {stage !== 'input' && <section className="interpretation"><div className="interpret-title"><BadgeCheck size={17}/>您的观点概览</div><div className="interpret-grid">{Object.entries(scenario.interpretation).map(([key, value]) => <div key={key}><span>{{ subject: '关注方向', direction: '您的判断', horizon: '关注周期', catalyst: '潜在催化', unknown: '待确认信息' }[key]}</span><strong>{value}</strong></div>)}</div></section>}
 
       {stage !== 'input' && !isStockMode && <section id="candidates" className="block">

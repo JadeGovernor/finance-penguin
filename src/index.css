@@ -48,3 +48,5 @@
 
 .stock-extra{margin-top:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:7px}.stock-extra summary{cursor:pointer;color:var(--muted);font-size:10px;font-weight:650;letter-spacing:.04em}.stock-extra summary:hover{color:var(--primary)}.stock-extra textarea{min-height:64px;margin-top:9px;padding:11px;font-size:12px}
 .elapsed{font-style:normal;color:var(--primary);font-size:11px;font-variant-numeric:tabular-nums}
+
+.direct-note{display:flex;gap:8px;margin-bottom:14px;padding:10px 12px;color:#fde68a;background:var(--amber-soft);border:1px solid rgba(251,191,36,.25);border-radius:6px;font-size:11px;line-height:1.5}
