@@ -161,6 +161,25 @@ type ReviewReport = {
 const EMPTY_PORTFOLIO: PortfolioReport = { score: 0, totalWeight: 0, maxTheme: null, themes: {}, aiWeight: 0, defensiveWeight: 0, items: [], management: [], combinations: [], note: '', marketNote: '' }
 const EMPTY_REVIEW: ReviewReport = { targetName: '', conclusion: '', positives: [], issues: [], unavoidable: [], nextActions: [], comparisons: [], marketNote: '' }
 
+// 复盘引导：每步 A/B/C 分类 + D 自定义，多轮确认后再交给 AI
+const REVIEW_GUIDE_STEPS = [
+  { key: 'operation', question: '这次操作属于哪种情况？', options: [
+    { label: '按原计划执行', desc: '触发价、仓位、止盈止损都按计划来' },
+    { label: '部分偏离原计划', desc: '仓位、价格或处理时机有一项没按计划' },
+    { label: '没有计划，凭感觉操作', desc: '下单前没有明确的入场、仓位或止损规则' },
+  ] },
+  { key: 'reason', question: '当时判断主要依据什么？', options: [
+    { label: '基本面', desc: '业绩、行业景气、估值等' },
+    { label: '技术面', desc: '价格、量能、形态、均线等' },
+    { label: '消息或情绪', desc: '新闻、题材热度、跟风交易' },
+  ] },
+  { key: 'question', question: '你最想搞清楚什么问题？', options: [
+    { label: '是行情问题还是我的问题', desc: '区分不可控因素与可优化动作' },
+    { label: '下次遇到同样情况怎么办', desc: '给出可执行的应对动作' },
+    { label: '原计划本身是否有效', desc: '检验触发价、仓位与止盈止损的设置' },
+  ] },
+]
+
 function getScoreTone(score: number) {
   return score >= 75 ? 'high' : score >= 60 ? 'medium' : 'low'
 }
@@ -235,6 +254,9 @@ export default function HomePage() {
   const [reviewReportReady, setReviewReportReady] = useState(false)
   const [reviewLoading, setReviewLoading] = useState(false)
   const [reviewLive, setReviewLive] = useState<ReviewReport | null>(null)
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideStep, setGuideStep] = useState(0)
+  const [guideAnswers, setGuideAnswers] = useState<Record<string, { option: string; custom: string }>>({})
   const [reviewRecords, setReviewRecords] = useState<ReviewRecord[]>(() => {
     try { return JSON.parse(storageGet('thesis-ai-reviews') || '[]') as ReviewRecord[] } catch { return [] }
   })
@@ -592,8 +614,7 @@ export default function HomePage() {
   const startReviewFromArchive = (archive: ArchiveRecord) => {
     setReviewMode('stock'); setReviewArchive(archive); setReviewOperation(`我围绕 ${archive.name} 做了一次观察后的操作：价格、仓位和处理过程如下……`); setReviewReason(`当时参考了「${getArchiveFileName(archive)}」这次分析，但实际处理中有一些犹豫。`); setReviewResult('亏损'); setReviewPnl('-3.6%'); setReviewQuestion('这次结果主要是行情问题，还是我可以主动规避？'); setReviewError(''); setReviewReportReady(false); setActiveArchive(null); showReview()
   }
-  const generateReview = async (opts: { operation: string; reason: string; result: '盈利' | '亏损' | '持平'; pnl: string; question: string; mode: ReviewMode; archive: ArchiveRecord | null; saveRecord: boolean }) => {
-    if (opts.operation.trim().length < 20 || opts.reason.trim().length < 10 || !opts.pnl.trim()) { setReviewError('请补充实际操作、当时判断和最终盈亏，AI 才能区分无法规避与可以优化。'); return }
+  const generateReview = async (opts: { operation: string; reason: string; result: '盈利' | '亏损' | '持平'; pnl: string; question: string; mode: ReviewMode; archive: ArchiveRecord | null; saveRecord: boolean; guide?: string }) => {
     const gate = tryUsePremium(plan)
     setPlan(gate.plan)
     if (!gate.ok) { setReviewError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
@@ -607,7 +628,7 @@ export default function HomePage() {
       setPlan(tracked.plan)
       const resp = await fetch(`${API_BASE}/api/review`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: opts.mode, targetName, archive: opts.archive, items: portfolioItems, quotes, tradingSystem: tradingSystem?.text, degraded: tracked.degraded, operation: opts.operation, reason: opts.reason, result: opts.result, pnl: opts.pnl, question: opts.question }),
+        body: JSON.stringify({ mode: opts.mode, targetName, archive: opts.archive, items: portfolioItems, quotes, tradingSystem: tradingSystem?.text, degraded: tracked.degraded, operation: opts.operation, reason: opts.reason, result: opts.result, pnl: opts.pnl, question: opts.question, guide: opts.guide }),
         signal: AbortSignal.timeout(200_000),
       })
       const data = await resp.json().catch(() => ({}))
@@ -637,7 +658,20 @@ export default function HomePage() {
       setReviewLoading(false)
     }
   }
-  const runReview = () => { void generateReview({ operation: reviewOperation, reason: reviewReason, result: reviewResult, pnl: reviewPnl, question: reviewQuestion, mode: reviewMode, archive: reviewArchive, saveRecord: true }) }
+  const closeGuide = () => setGuideOpen(false)
+  const openGuide = () => { setGuideStep(0); setGuideAnswers({}); setGuideOpen(true) }
+  const runReview = () => { openGuide() }
+  const startGuidedReview = (skip: boolean) => {
+    setGuideOpen(false)
+    const guide = skip
+      ? undefined
+      : REVIEW_GUIDE_STEPS.map((step, index) => {
+          const answer = guideAnswers[step.key]
+          if (!answer) return `${index + 1}. ${step.question} → 未选择`
+          return `${index + 1}. ${step.question} → ${answer.option}${answer.custom ? `（自定义：${answer.custom}）` : ''}`
+        }).join('；')
+    void generateReview({ operation: reviewOperation, reason: reviewReason, result: reviewResult, pnl: reviewPnl, question: reviewQuestion, mode: reviewMode, archive: reviewArchive, saveRecord: true, guide })
+  }
   const openReviewRecord = (record: ReviewRecord) => {
     setReviewMode(record.mode)
     const archive = record.archiveId ? archives.find((item) => item.id === record.archiveId) || null : null
@@ -832,6 +866,7 @@ export default function HomePage() {
     </aside>}
     {activeArchive && <div className="modal-layer"><div className="archive-detail-modal"><div className="archive-detail-head"><div><span className="section-no">完整留档</span><h2>{getArchiveFileName(activeArchive)}</h2><p>{activeArchive.code}</p><p>{activeArchive.query}</p></div><button className="icon-btn" onClick={() => setActiveArchive(null)} aria-label="关闭留档详情"><X size={18}/></button></div><div className="archive-detail-body"><section><div className="doc-title"><FileSearch size={18}/><div><span>文档 01</span><h3>研究分析</h3></div></div><div className="detail-summary"><div><span>分析任务</span><strong>{activeArchive.taskTitle || activeArchive.subject}</strong></div><div><span>综合判断</span><strong>{activeArchive.verdict}</strong></div><div><span>跟踪评分</span><strong>{activeArchive.score} / 100</strong></div></div><div className="detail-opinions">{(activeArchive.members?.length ? activeArchive.members : baseCommittee).map((member) => <div key={member.key}><span>{member.label}</span><p>{member.summary}</p></div>)}</div></section>{activeArchive.tradingSystemText && <section><div className="doc-title"><ShieldCheck size={18}/><div><span>规则快照</span><h3>我的交易系统</h3></div></div><p className="archived-system-text">{activeArchive.tradingSystemText}</p><div className="detail-summary"><div><span>规则更新时间</span><strong>{activeArchive.tradingSystemUpdatedAt ? new Date(activeArchive.tradingSystemUpdatedAt).toLocaleString('zh-CN') : '未记录'}</strong></div><div><span>系统原始结论</span><strong>{activeArchive.systemVerdict || '依据不足'}</strong></div></div></section>}<section><div className="doc-title"><FileText size={18}/><div><span>文档 02</span><h3>观察计划</h3></div></div><div className="detail-summary"><div><span>若条件触发</span><strong>首次 {activeArchive.initialPosition || '5%'} · 最高 {activeArchive.maxPosition || '10%'}</strong></div><div><span>触发 / 失效</span><strong>¥{activeArchive.entryPrice || 162} / ¥{activeArchive.stopPrice || 157}</strong></div><div><span>兑现观察区间</span><strong>{activeArchive.takeRange || '¥175 — ¥178'}</strong></div></div><p className="detail-note">{activeArchive.marketNote || '基于生成时的实时行情快照，价格触及不代表自动交易；请随最新行情持续复核。'}</p></section></div><div className="archive-detail-actions"><button className="btn ghost" onClick={() => deleteArchive(activeArchive.id)}><Trash2 size={14}/>删除留档</button><button className="btn secondary" onClick={() => addArchiveToPortfolio(activeArchive)}><Plus size={14}/>加入组合</button><button className="btn secondary" onClick={() => startReviewFromArchive(activeArchive)}><ClipboardCheck size={14}/>开始复盘</button><button className="btn primary" onClick={() => { setActiveArchive(null); showAssistant(); setToast('已返回分析助手，可基于最新数据重新复核') }}><RefreshCw size={14}/>继续复核</button></div></div></div>}
 
+    {guideOpen && <div className="modal-layer"><div className="modal guide-modal"><button className="icon-btn close" onClick={closeGuide} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><ClipboardCheck size={25}/></div><h2>复盘前，先确认几个关键点</h2><p>填什么都行，不确定的步骤可以直接跳过；AI 会结合你的选择和已有描述生成复盘。</p><div className="guide-progress"><span>第 {guideStep + 1} / {REVIEW_GUIDE_STEPS.length} 步</span><div className="guide-progress-bar"><i style={{ width: `${((guideStep + 1) / REVIEW_GUIDE_STEPS.length) * 100}%` }}/></div></div>{(() => { const step = REVIEW_GUIDE_STEPS[guideStep]; const answer = guideAnswers[step.key]; return <div className="guide-step" key={step.key}><h3>{step.question}</h3><div className="guide-options">{step.options.map((opt, index) => { const letter = 'ABC'[index]; const selected = answer?.option === opt.label; return <button key={opt.label} className={`guide-option ${selected ? 'selected' : ''}`} onClick={() => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: opt.label, custom: '' } }))}><b>{letter}</b><span><strong>{opt.label}</strong><small>{opt.desc}</small></span></button> })}<button className={`guide-option ${answer?.option === '其他' ? 'selected' : ''}`} onClick={() => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: prev[step.key]?.custom || '' } }))}><b>D</b><span><strong>其他情况（自己描述）</strong><small>选择后可输入你想表达的情况或问题</small></span></button></div>{answer?.option === '其他' && <input className="guide-custom" value={answer.custom} onChange={(e) => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: e.target.value } }))} placeholder="在这里描述你的情况…" maxLength={200}/>}</div> })()}<div className="modal-actions guide-actions"><button className="btn ghost" onClick={() => startGuidedReview(true)}>跳过引导，直接复盘</button><button className="btn primary" onClick={() => { if (guideStep >= REVIEW_GUIDE_STEPS.length - 1) { startGuidedReview(false) } else { setGuideStep((s) => s + 1) } }}>{guideStep >= REVIEW_GUIDE_STEPS.length - 1 ? '开始 AI 复盘' : '下一步'}</button></div></div></div>}
     {pricingOpen && <div className="modal-layer"><div className="modal pricing-modal"><button className="icon-btn close" onClick={() => setPricingOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><BadgeCheck size={25}/></div><h2>Finance Penguin 会员方案</h2><p>当前账户：{plan.name}。免费版即可体验完整分析；升级专业版解锁不限次数的高级功能。</p><div className="pricing-grid"><div className={`pricing-card ${plan.tier === 'free' ? 'current' : ''}`}><h3>免费版</h3><div className="price">¥0<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {FREE_PREMIUM_QUOTA} 次</li></ul>{plan.tier === 'free' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn secondary" onClick={() => { setPricingOpen(false); setToast('已切回免费版') }}>切回免费版</button>}</div><div className={`pricing-card pro ${plan.tier === 'pro' ? 'current' : ''}`}><h3>专业版</h3><div className="price">¥29<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：不限次数</li><li>优先使用深度分析模型</li></ul>{plan.tier === 'pro' ? <button className="btn primary" disabled>已开通</button> : <button className="btn primary" onClick={handleUpgrade}>立即开通</button>}</div></div><div className="legal-note">会员方案与配额当前保存在本地，正式账号体系上线后将随账号云端同步。</div></div></div>}
     {renameTarget && <div className="modal-layer"><div className="modal"><button className="icon-btn close" onClick={() => setRenameTarget(null)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><Pencil size={25}/></div><h2>重命名复盘</h2><p>修改后的名称会显示在历史复盘列表中。</p><label htmlFor="rename-title">复盘名称</label><input id="rename-title" className="rename-input" value={renameDraft} onChange={(e) => setRenameDraft(e.target.value)} maxLength={40} placeholder="输入新的复盘名称"/><div className="modal-actions"><button className="btn ghost" onClick={() => setRenameTarget(null)}>取消</button><button className="btn primary" disabled={!renameDraft.trim()} onClick={saveRename}>保存</button></div></div></div>}
     {toast && <div className="toast" role="status" aria-live="assertive"><CheckCircle2 size={20}/><div><strong>{toast}</strong><span>本次观点、验证标的、综合判断和观察计划已保存</span><button onClick={showArchives}>前往留档查看</button></div><button className="toast-close" onClick={() => setToast('')} aria-label="关闭提示"><X size={15}/></button></div>}

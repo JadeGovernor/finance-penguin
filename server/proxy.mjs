@@ -353,11 +353,11 @@ function buildPortfolioPrompt({ items, quotes, tradingSystem }) {
   ].join('\n')
 }
 
-function buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question }) {
+function buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question, guide }) {
   const plan = archive
     ? { entryPrice: archive.entryPrice, stopPrice: archive.stopPrice, takeRange: archive.takeRange, initialPosition: archive.initialPosition, maxPosition: archive.maxPosition }
     : null
-  return [
+  const lines = [
     `复盘对象：${mode === 'stock' ? `个股「${targetName}」` : `组合（${items?.length || 0} 只）`}`,
     `原观察计划（JSON）：${plan ? JSON.stringify(plan) : '未提供'}`,
     `用户实际操作：${operation || '未填写'}`,
@@ -367,7 +367,11 @@ function buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSy
     `实时行情快照（JSON）：${JSON.stringify(quotes || [])}`,
     `用户交易系统：${tradingSystem || '未提供'}`,
     `当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
-  ].join('\n')
+  ]
+  if (guide) {
+    lines.splice(1, 0, `用户引导确认（用户点选的分类与自定义说明，复盘需围绕这些确认展开）：${guide}`)
+  }
+  return lines.join('\n')
 }
 
 async function callChatJson(key, messages, degraded) {
@@ -410,10 +414,10 @@ async function handleReview(req, res) {
   if (!key) return json(res, 503, { error: '未找到 DeepSeek API key，请先配置。' })
   let body
   try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
-  const { mode, targetName, archive, items, quotes, tradingSystem, degraded, operation, reason, result, pnl, question } = body || {}
+  const { mode, targetName, archive, items, quotes, tradingSystem, degraded, operation, reason, result, pnl, question, guide } = body || {}
   const messages = [
     { role: 'system', content: REVIEW_SYSTEM_PROMPT },
-    { role: 'user', content: buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question }) },
+    { role: 'user', content: buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question, guide }) },
   ]
   try {
     const out = await callChatJson(key, messages, Boolean(degraded))
