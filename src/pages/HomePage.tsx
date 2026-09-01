@@ -9,7 +9,7 @@ import {
 import { fetchQuotes, stockNameMatch, type Quote } from '@/lib/quotes'
 import { runAnalysis, type AnalysisResult, type AnalysisMember } from '@/lib/ai'
 import { resolveStock } from '@/lib/resolve'
-import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, type PlanState } from '@/lib/plan'
+import { getPlan, trackAnalysis, tryUsePremium, upgradePlan, premiumRemaining, FREE_PREMIUM_QUOTA, PLUS_PREMIUM_QUOTA, type PlanState } from '@/lib/plan'
 import { storageGet, storageSet, storageRemove } from '@/lib/storage'
 
 type EntryMode = 'thesis' | 'stock'
@@ -180,6 +180,25 @@ const REVIEW_GUIDE_STEPS = [
   ] },
 ]
 
+// 个股分析引导：输入只有股票名/方向模糊时，多轮确认方向、周期与关注点
+const STOCK_GUIDE_STEPS = [
+  { key: 'direction', question: '你对这只股票的短期方向判断？', options: [
+    { label: '看多 / 偏强', desc: '认为未来一段时间偏强或有望修复' },
+    { label: '看空 / 偏弱', desc: '认为短期有回调或下跌压力' },
+    { label: '中性 / 不确定', desc: '没有明确方向，想了解多空逻辑' },
+  ] },
+  { key: 'horizon', question: '你更关注多长的周期？', options: [
+    { label: '1-3 天', desc: '短线博弈，关注盘中与次日表现' },
+    { label: '一周左右', desc: '中短期观察，适合一周观察计划' },
+    { label: '一个月以上', desc: '偏中期逻辑，关注基本面兑现' },
+  ] },
+  { key: 'focus', question: '你主要关注它的哪方面？', options: [
+    { label: '技术面 / 价格位置', desc: '均线、量能、支撑压力、趋势形态' },
+    { label: '基本面 / 业绩', desc: '业绩、行业景气、估值、订单' },
+    { label: '消息 / 题材催化', desc: '新闻、政策、题材热度、资金关注' },
+  ] },
+]
+
 function getScoreTone(score: number) {
   return score >= 75 ? 'high' : score >= 60 ? 'medium' : 'low'
 }
@@ -257,6 +276,10 @@ export default function HomePage() {
   const [guideOpen, setGuideOpen] = useState(false)
   const [guideStep, setGuideStep] = useState(0)
   const [guideAnswers, setGuideAnswers] = useState<Record<string, { option: string; custom: string }>>({})
+  const [stockGuideOpen, setStockGuideOpen] = useState(false)
+  const [stockGuideStep, setStockGuideStep] = useState(0)
+  const [stockGuideAnswers, setStockGuideAnswers] = useState<Record<string, { option: string; custom: string }>>({})
+  const [proBilling, setProBilling] = useState<'month' | 'year'>('month')
   const [reviewRecords, setReviewRecords] = useState<ReviewRecord[]>(() => {
     try { return JSON.parse(storageGet('thesis-ai-reviews') || '[]') as ReviewRecord[] } catch { return [] }
   })
@@ -352,7 +375,7 @@ export default function HomePage() {
     setMode(nextMode)
     setQuery(nextMode === 'thesis' ? themeScenario.input : stockScenario.input)
     setExtraNote('')
-    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null); setDirectNote('')
+    setStage('input'); setSelected(null); setCommitteeTick(-1); setError(''); setCardOpen(false); setJustArchived(false); setLive(null); setDirectNote(''); setStockGuideOpen(false)
   }
 
   const loadQuotes = async (codes?: string[]) => {
@@ -389,10 +412,29 @@ export default function HomePage() {
     const text = query.trim()
     if (isStockMode) {
       if (text.length < 2) { setError('请输入股票名称或 6 位代码。'); return }
+      // 只输入了股票名或补充方向很模糊 → 先引导确认方向/周期/关注点（可跳过直接分析）
+      if (extraNote.trim().length < 8) {
+        setStockGuideStep(0); setStockGuideAnswers({}); setStockGuideOpen(true)
+        return
+      }
     } else if (text.length < 8) {
       setError('请补充观点、方向和时间。')
       return
     }
+    void runAnalysisFlow(text, extraNote.trim())
+  }
+  const startGuidedStockAnalysis = (skip: boolean) => {
+    setStockGuideOpen(false)
+    const note = skip
+      ? undefined
+      : STOCK_GUIDE_STEPS.map((step) => {
+          const answer = stockGuideAnswers[step.key]
+          if (!answer) return `${step.question}→未选择`
+          return `${step.question}→${answer.option}${answer.custom ? `（自定义：${answer.custom}）` : ''}`
+        }).join('；')
+    void runAnalysisFlow(query.trim(), extraNote.trim(), note)
+  }
+  const runAnalysisFlow = async (text: string, note: string, guide?: string) => {
     setError(''); setLoading(true)
     try {
       const tracked = trackAnalysis(plan)
@@ -424,13 +466,12 @@ export default function HomePage() {
         } else {
           unresolved = true
         }
-        const note = extraNote.trim()
         analyzeInput = note ? `个股：${text}。补充判断：${note}` : `个股：${text}`
         if (unresolved) setLoadingLabel('未能识别代码或未取到行情，AI 直判中…')
       }
 
       setLoadingLabel('AI 分析中…')
-      const result = await runAnalysis({ input: analyzeInput, mode, tradingSystem: tradingSystem?.text, quotes: snapshotQuotes, degraded: tracked.degraded, targetStock, unresolved })
+      const result = await runAnalysis({ input: analyzeInput, mode, tradingSystem: tradingSystem?.text, quotes: snapshotQuotes, degraded: tracked.degraded, targetStock, unresolved, guide })
       setLive(result)
       if (result.candidates.length) loadQuotes(result.candidates.map((c) => c.code))
       if (isStockMode) {
@@ -474,7 +515,7 @@ export default function HomePage() {
 
   const openRisk = () => { setAcknowledged(false); setRiskModal(true) }
   const createCard = () => { if (!acknowledged) return; setRiskModal(false); setJustArchived(false); setCardOpen(true) }
-  const reset = () => { setView('assistant'); setStage('input'); setSelected(null); setCommitteeTick(-1); setCardOpen(false); setError(''); setDirectNote(''); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  const reset = () => { setView('assistant'); setStage('input'); setSelected(null); setCommitteeTick(-1); setCardOpen(false); setError(''); setDirectNote(''); setStockGuideOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
   const saveArchive = () => {
     if (!selected) return
     const now = new Date().toISOString()
@@ -565,7 +606,7 @@ export default function HomePage() {
     if (portfolioItems.length < 2) { setPortfolioError('至少添加 2 只股票后才能生成组合综合分析。'); return }
     const gate = tryUsePremium(plan)
     setPlan(gate.plan)
-    if (!gate.ok) { setPortfolioError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
+    if (!gate.ok) { setPortfolioError(`${plan.tier === 'plus' ? `Plus 版组合体检与复盘 ${PLUS_PREMIUM_QUOTA} 次已用完` : `免费版组合体检与复盘 ${FREE_PREMIUM_QUOTA} 次已用完`}；升级 Plus（9.9 元/月 50 次）或专业版（29 元/月不限次）。`); setPricingOpen(true); return }
     setPortfolioError(''); setPortfolioLoading(true); setPortfolioReportReady(false)
     try {
       const codes = portfolioItems.map((item) => item.code)
@@ -617,7 +658,7 @@ export default function HomePage() {
   const generateReview = async (opts: { operation: string; reason: string; result: '盈利' | '亏损' | '持平'; pnl: string; question: string; mode: ReviewMode; archive: ArchiveRecord | null; saveRecord: boolean; guide?: string }) => {
     const gate = tryUsePremium(plan)
     setPlan(gate.plan)
-    if (!gate.ok) { setReviewError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
+    if (!gate.ok) { setReviewError(`${plan.tier === 'plus' ? `Plus 版组合体检与复盘 ${PLUS_PREMIUM_QUOTA} 次已用完` : `免费版组合体检与复盘 ${FREE_PREMIUM_QUOTA} 次已用完`}；升级 Plus（9.9 元/月 50 次）或专业版（29 元/月不限次）。`); setPricingOpen(true); return }
     setReviewError(''); setReviewLoading(true); setReviewReportReady(false)
     try {
       const targetName = opts.mode === 'stock' ? (opts.archive?.name || '当前个股') : '当前组合'
@@ -686,7 +727,11 @@ export default function HomePage() {
     void generateReview({ operation: record.operation || '这是一条旧复盘记录，原始操作未保存。', reason: record.reason || '这是一条旧复盘记录，原始判断原因未保存。', result, pnl: record.pnl || '-0%', question: record.question || '', mode: record.mode, archive, saveRecord: false })
   }
   const deleteArchive = (id: string) => { setArchives((items) => items.filter((item) => item.id !== id)); setActiveArchive(null); setToast('留档已删除') }
-  const handleUpgrade = () => { const next = upgradePlan(); setPlan(next); setPricingOpen(false); setToast('已开通专业版会员') }
+  const handleUpgrade = (tier: 'plus' | 'pro', billing?: 'month' | 'year') => {
+    const next = upgradePlan(tier, billing)
+    setPlan(next); setPricingOpen(false)
+    setToast(tier === 'pro' ? (billing === 'year' ? '已开通专业版年付（299 元/年）' : '已开通专业版（29 元/月）') : '已开通 Plus（9.9 元/月 · 50 次）')
+  }
   const deleteReview = (id: string) => {
     setReviewRecords((items) => items.filter((item) => item.id !== id))
     if (renameTarget?.id === id) setRenameTarget(null)
@@ -743,7 +788,7 @@ export default function HomePage() {
   return <div className="app">
     <header className="topbar">
       <div className="brand"><button className="icon-btn menu-btn" aria-label="打开流程导航" onClick={() => setNavOpen(!navOpen)}><Menu size={18}/></button><div className="logo penguin-logo" aria-hidden="true"><svg viewBox="0 0 40 40" role="img"><ellipse cx="20" cy="20" rx="12" ry="15" fill="#111827"/><ellipse cx="20" cy="23" rx="8" ry="10" fill="#f8fafc"/><circle cx="16" cy="15" r="2.1" fill="#f8fafc"/><circle cx="24" cy="15" r="2.1" fill="#f8fafc"/><path d="M12 14h7v4h-7zM21 14h7v4h-7z" fill="#020617"/><path d="M19 16h2" stroke="#020617" strokeWidth="1.5"/><path d="M18 20h4l-2 2.5z" fill="#f59e0b"/><path d="M13 31c2 2 12 2 14 0" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/></svg></div><div><strong>finance penguin</strong><span>A 股假设验证台</span></div></div>
-      <div className="top-actions"><button className="plan-chip" onClick={() => setPricingOpen(true)} aria-label="查看会员方案"><BadgeCheck size={13}/><span>{plan.tier === 'pro' ? '专业版 · 已开通' : `免费版 · 高级功能剩余 ${premiumRemaining(plan)} 次`}</span><strong>{plan.tier === 'pro' ? '29 元/月' : '升级专业版'}</strong></button><button className="market-refresh" onClick={refreshMarket} disabled={marketRefreshing} aria-label="刷新最新行情并重置"><Database size={13}/><span>最新行情 · 重置</span><strong>{marketTimeLabel}</strong>{marketRefreshing && <RefreshCw className="spin" size={13}/>}</button></div>
+      <div className="top-actions"><button className="plan-chip" onClick={() => setPricingOpen(true)} aria-label="查看会员方案"><BadgeCheck size={13}/><span>{plan.tier === 'pro' ? '专业版 · 已开通' : plan.tier === 'plus' ? `Plus · 高级功能剩余 ${premiumRemaining(plan)} 次` : `免费版 · 高级功能剩余 ${premiumRemaining(plan)} 次`}</span><strong>{plan.tier === 'pro' ? (plan.billing === 'year' ? '299 元/年' : '29 元/月') : plan.tier === 'plus' ? '9.9 元/月' : '升级会员'}</strong></button><button className="market-refresh" onClick={refreshMarket} disabled={marketRefreshing} aria-label="刷新最新行情并重置"><Database size={13}/><span>最新行情 · 重置</span><strong>{marketTimeLabel}</strong>{marketRefreshing && <RefreshCw className="spin" size={13}/>}</button></div>
     </header>
 
     <aside className={`rail ${navOpen ? 'open' : ''}`}>
@@ -867,7 +912,8 @@ export default function HomePage() {
     {activeArchive && <div className="modal-layer"><div className="archive-detail-modal"><div className="archive-detail-head"><div><span className="section-no">完整留档</span><h2>{getArchiveFileName(activeArchive)}</h2><p>{activeArchive.code}</p><p>{activeArchive.query}</p></div><button className="icon-btn" onClick={() => setActiveArchive(null)} aria-label="关闭留档详情"><X size={18}/></button></div><div className="archive-detail-body"><section><div className="doc-title"><FileSearch size={18}/><div><span>文档 01</span><h3>研究分析</h3></div></div><div className="detail-summary"><div><span>分析任务</span><strong>{activeArchive.taskTitle || activeArchive.subject}</strong></div><div><span>综合判断</span><strong>{activeArchive.verdict}</strong></div><div><span>跟踪评分</span><strong>{activeArchive.score} / 100</strong></div></div><div className="detail-opinions">{(activeArchive.members?.length ? activeArchive.members : baseCommittee).map((member) => <div key={member.key}><span>{member.label}</span><p>{member.summary}</p></div>)}</div></section>{activeArchive.tradingSystemText && <section><div className="doc-title"><ShieldCheck size={18}/><div><span>规则快照</span><h3>我的交易系统</h3></div></div><p className="archived-system-text">{activeArchive.tradingSystemText}</p><div className="detail-summary"><div><span>规则更新时间</span><strong>{activeArchive.tradingSystemUpdatedAt ? new Date(activeArchive.tradingSystemUpdatedAt).toLocaleString('zh-CN') : '未记录'}</strong></div><div><span>系统原始结论</span><strong>{activeArchive.systemVerdict || '依据不足'}</strong></div></div></section>}<section><div className="doc-title"><FileText size={18}/><div><span>文档 02</span><h3>观察计划</h3></div></div><div className="detail-summary"><div><span>若条件触发</span><strong>首次 {activeArchive.initialPosition || '5%'} · 最高 {activeArchive.maxPosition || '10%'}</strong></div><div><span>触发 / 失效</span><strong>¥{activeArchive.entryPrice || 162} / ¥{activeArchive.stopPrice || 157}</strong></div><div><span>兑现观察区间</span><strong>{activeArchive.takeRange || '¥175 — ¥178'}</strong></div></div><p className="detail-note">{activeArchive.marketNote || '基于生成时的实时行情快照，价格触及不代表自动交易；请随最新行情持续复核。'}</p></section></div><div className="archive-detail-actions"><button className="btn ghost" onClick={() => deleteArchive(activeArchive.id)}><Trash2 size={14}/>删除留档</button><button className="btn secondary" onClick={() => addArchiveToPortfolio(activeArchive)}><Plus size={14}/>加入组合</button><button className="btn secondary" onClick={() => startReviewFromArchive(activeArchive)}><ClipboardCheck size={14}/>开始复盘</button><button className="btn primary" onClick={() => { setActiveArchive(null); showAssistant(); setToast('已返回分析助手，可基于最新数据重新复核') }}><RefreshCw size={14}/>继续复核</button></div></div></div>}
 
     {guideOpen && <div className="modal-layer"><div className="modal guide-modal"><button className="icon-btn close" onClick={closeGuide} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><ClipboardCheck size={25}/></div><h2>复盘前，先确认几个关键点</h2><p>填什么都行，不确定的步骤可以直接跳过；AI 会结合你的选择和已有描述生成复盘。</p><div className="guide-progress"><span>第 {guideStep + 1} / {REVIEW_GUIDE_STEPS.length} 步</span><div className="guide-progress-bar"><i style={{ width: `${((guideStep + 1) / REVIEW_GUIDE_STEPS.length) * 100}%` }}/></div></div>{(() => { const step = REVIEW_GUIDE_STEPS[guideStep]; const answer = guideAnswers[step.key]; return <div className="guide-step" key={step.key}><h3>{step.question}</h3><div className="guide-options">{step.options.map((opt, index) => { const letter = 'ABC'[index]; const selected = answer?.option === opt.label; return <button key={opt.label} className={`guide-option ${selected ? 'selected' : ''}`} onClick={() => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: opt.label, custom: '' } }))}><b>{letter}</b><span><strong>{opt.label}</strong><small>{opt.desc}</small></span></button> })}<button className={`guide-option ${answer?.option === '其他' ? 'selected' : ''}`} onClick={() => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: prev[step.key]?.custom || '' } }))}><b>D</b><span><strong>其他情况（自己描述）</strong><small>选择后可输入你想表达的情况或问题</small></span></button></div>{answer?.option === '其他' && <input className="guide-custom" value={answer.custom} onChange={(e) => setGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: e.target.value } }))} placeholder="在这里描述你的情况…" maxLength={200}/>}</div> })()}<div className="modal-actions guide-actions"><button className="btn ghost" onClick={() => startGuidedReview(true)}>跳过引导，直接复盘</button><button className="btn primary" onClick={() => { if (guideStep >= REVIEW_GUIDE_STEPS.length - 1) { startGuidedReview(false) } else { setGuideStep((s) => s + 1) } }}>{guideStep >= REVIEW_GUIDE_STEPS.length - 1 ? '开始 AI 复盘' : '下一步'}</button></div></div></div>}
-    {pricingOpen && <div className="modal-layer"><div className="modal pricing-modal"><button className="icon-btn close" onClick={() => setPricingOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><BadgeCheck size={25}/></div><h2>Finance Penguin 会员方案</h2><p>当前账户：{plan.name}。免费版即可体验完整分析；升级专业版解锁不限次数的高级功能。</p><div className="pricing-grid"><div className={`pricing-card ${plan.tier === 'free' ? 'current' : ''}`}><h3>免费版</h3><div className="price">¥0<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {FREE_PREMIUM_QUOTA} 次</li></ul>{plan.tier === 'free' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn secondary" onClick={() => { setPricingOpen(false); setToast('已切回免费版') }}>切回免费版</button>}</div><div className={`pricing-card pro ${plan.tier === 'pro' ? 'current' : ''}`}><h3>专业版</h3><div className="price">¥29<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：不限次数</li><li>优先使用深度分析模型</li></ul>{plan.tier === 'pro' ? <button className="btn primary" disabled>已开通</button> : <button className="btn primary" onClick={handleUpgrade}>立即开通</button>}</div></div><div className="legal-note">会员方案与配额当前保存在本地，正式账号体系上线后将随账号云端同步。</div></div></div>}
+    {stockGuideOpen && <div className="modal-layer"><div className="modal guide-modal"><button className="icon-btn close" onClick={() => setStockGuideOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><Target size={25}/></div><h2>分析前，先确认你的判断</h2><p>只填股票名也可以直接分析；多花几步确认方向与关注点，AI 的分析会更贴合你的想法。不确定就跳过。</p><div className="guide-progress"><span>第 {stockGuideStep + 1} / {STOCK_GUIDE_STEPS.length} 步</span><div className="guide-progress-bar"><i style={{ width: `${((stockGuideStep + 1) / STOCK_GUIDE_STEPS.length) * 100}%` }}/></div></div>{(() => { const step = STOCK_GUIDE_STEPS[stockGuideStep]; const answer = stockGuideAnswers[step.key]; return <div className="guide-step" key={step.key}><h3>{step.question}</h3><div className="guide-options">{step.options.map((opt, index) => { const letter = 'ABC'[index]; const selected = answer?.option === opt.label; return <button key={opt.label} className={`guide-option ${selected ? 'selected' : ''}`} onClick={() => setStockGuideAnswers((prev) => ({ ...prev, [step.key]: { option: opt.label, custom: '' } }))}><b>{letter}</b><span><strong>{opt.label}</strong><small>{opt.desc}</small></span></button> })}<button className={`guide-option ${answer?.option === '其他' ? 'selected' : ''}`} onClick={() => setStockGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: prev[step.key]?.custom || '' } }))}><b>D</b><span><strong>其他（自己描述）</strong><small>选择后可输入你想表达的方向或关注点</small></span></button></div>{answer?.option === '其他' && <input className="guide-custom" value={answer.custom} onChange={(e) => setStockGuideAnswers((prev) => ({ ...prev, [step.key]: { option: '其他', custom: e.target.value } }))} placeholder="在这里描述你的判断…" maxLength={200}/>}</div> })()}<div className="modal-actions guide-actions"><button className="btn ghost" onClick={() => startGuidedStockAnalysis(true)}>跳过引导，直接分析</button><button className="btn primary" onClick={() => { if (stockGuideStep >= STOCK_GUIDE_STEPS.length - 1) { startGuidedStockAnalysis(false) } else { setStockGuideStep((s) => s + 1) } }}>{stockGuideStep >= STOCK_GUIDE_STEPS.length - 1 ? '开始 AI 分析' : '下一步'}</button></div></div></div>}
+    {pricingOpen && <div className="modal-layer"><div className="modal pricing-modal"><button className="icon-btn close" onClick={() => setPricingOpen(false)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><BadgeCheck size={25}/></div><h2>Finance Penguin 会员方案</h2><p>当前账户：{plan.name}。基础行情分析永久免费不限次数；组合体检与复盘按档位分配次数。</p><div className="pricing-grid wide"><div className={`pricing-card ${plan.tier === 'free' ? 'current' : ''}`}><h3>免费版</h3><div className="price">¥0<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {FREE_PREMIUM_QUOTA} 次</li></ul>{plan.tier === 'free' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn secondary" onClick={() => { setPricingOpen(false); setToast('已切回免费版') }}>切回免费版</button>}</div><div className={`pricing-card ${plan.tier === 'plus' ? 'current' : ''}`}><h3>Plus</h3><div className="price">¥9.9<small>/月</small></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：共 {PLUS_PREMIUM_QUOTA} 次</li></ul>{plan.tier === 'plus' ? <button className="btn secondary" disabled>当前方案</button> : <button className="btn primary" onClick={() => handleUpgrade('plus')}>升级 Plus</button>}</div><div className={`pricing-card pro ${plan.tier === 'pro' ? 'current' : ''}`}><h3>专业版</h3><div className="billing-toggle"><button className={proBilling === 'month' ? 'active' : ''} onClick={() => setProBilling('month')}>¥29/月</button><button className={proBilling === 'year' ? 'active' : ''} onClick={() => setProBilling('year')}>¥299/年</button></div><ul><li>基础行情分析：不限次数</li><li>组合体检 + 复盘：不限次数</li><li>优先使用深度分析模型</li></ul>{plan.tier === 'pro' ? <button className="btn primary" disabled>已开通</button> : <button className="btn primary" onClick={() => handleUpgrade('pro', proBilling)}>{proBilling === 'year' ? '开通年付 299 元' : '开通月付 29 元'}</button>}</div></div><div className="legal-note">会员方案与配额当前保存在本地，正式账号体系上线后将随账号云端同步；年付对标月付 29 元专业版。</div></div></div>}
     {renameTarget && <div className="modal-layer"><div className="modal"><button className="icon-btn close" onClick={() => setRenameTarget(null)} aria-label="关闭"><X size={18}/></button><div className="modal-icon"><Pencil size={25}/></div><h2>重命名复盘</h2><p>修改后的名称会显示在历史复盘列表中。</p><label htmlFor="rename-title">复盘名称</label><input id="rename-title" className="rename-input" value={renameDraft} onChange={(e) => setRenameDraft(e.target.value)} maxLength={40} placeholder="输入新的复盘名称"/><div className="modal-actions"><button className="btn ghost" onClick={() => setRenameTarget(null)}>取消</button><button className="btn primary" disabled={!renameDraft.trim()} onClick={saveRename}>保存</button></div></div></div>}
     {toast && <div className="toast" role="status" aria-live="assertive"><CheckCircle2 size={20}/><div><strong>{toast}</strong><span>本次观点、验证标的、综合判断和观察计划已保存</span><button onClick={showArchives}>前往留档查看</button></div><button className="toast-close" onClick={() => setToast('')} aria-label="关闭提示"><X size={15}/></button></div>}
   </div>

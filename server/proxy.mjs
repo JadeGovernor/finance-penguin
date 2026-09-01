@@ -78,10 +78,11 @@ const SYSTEM_PROMPT = `你是「Finance Penguin」A 股投研假设验证台的�
 输出 JSON 结构：
 {"interpretation":{"subject":"","direction":"","horizon":"","catalyst":"","unknown":""},"strategy":"","candidates":[{"code":"600519.SH","name":"","role":"","tags":[],"reason":"","difference":"","doubt":"","price":0,"change":0,"score":0}],"members":[{"key":"bull","label":"乐观研究员","tone":"positive","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[{"id":"E-01","name":"","date":"","url":""}],"gap":""},{"key":"bear","label":"悲观研究员","tone":"negative","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"risk","label":"风控委员","tone":"warning","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""},{"key":"judge","label":"裁决官","tone":"accent","score":0,"summary":"","conclusion":"","analysis":[],"basis":[],"evidence":[],"gap":""}],"scores":[{"label":"逻辑强度","value":0,"help":""},{"label":"证据完整度","value":0,"help":""},{"label":"兑现程度","value":0,"help":""},{"label":"市场拥挤度","value":0,"help":""},{"label":"风险可控度","value":0,"help":""}],"verdict":{"title":"","conclusion":"","score":0,"deduction":""},"plan":{"entryPrice":0,"stopPrice":0,"takeRange":"","initialPosition":"5%","maxPosition":"10%","focus":[],"satisfy":[],"reduce":[],"cancel":[],"pending":[]},"marketNote":""}`
 
-function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved }) {
+function buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved, guide }) {
   const lines = [
     `用户输入（${mode === 'stock' ? '指定个股' : '市场观点'}）：${input}`,
   ]
+  if (guide) lines.push(`用户引导确认（用户点选的判断与关注点，分析需围绕这些展开）：${guide}`)
   if (tradingSystem) lines.push(`用户保存的交易系统原文：${tradingSystem}`)
   if (targetStock?.code) lines.push(unresolved
     ? `已解析目标个股（但未能获取其实时行情）：${targetStock.name}（${targetStock.code}）`
@@ -145,12 +146,12 @@ async function handleAnalyze(req, res) {
   }
   let body
   try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
-  const { input, mode, tradingSystem, quotes, degraded, targetStock, unresolved } = body || {}
+  const { input, mode, tradingSystem, quotes, degraded, targetStock, unresolved, guide } = body || {}
   if (!input || typeof input !== 'string' || input.trim().length < 2) return json(res, 400, { error: '缺少输入内容' })
 
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved }) },
+    { role: 'user', content: buildUserPrompt({ input, mode, tradingSystem, quotes, degraded, targetStock, unresolved, guide }) },
   ]
   try {
     const { res: upstream, data } = await callDeepSeek(key, messages, Boolean(degraded))
