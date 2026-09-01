@@ -94,3 +94,9 @@
 - 访问提速：`serveStatic` 增加 gzip 压缩 + 内存缓存 + 哈希资源不可变缓存头（`max-age=31536000, immutable`）。JS 263KB→gzip 87KB（-67%），重复访问静态资源几乎零网络传输；index.html 仍 no-cache 保证新版本即时生效。验证：本地与服务器均返回 `Content-Encoding: gzip` + immutable。
 - 公网访问诊断（用户反馈「网址访问不上」）：服务 active、监听 0.0.0.0:8787、公网 IP 49.232.16.132 正确、OS 防火墙（ufw/iptables）均放行；但服务器自测公网 IP hairpin 超时 → 判定为腾讯云控制台实例防火墙未放行 TCP 8787，需用户在控制台添加规则（TCP 8787，来源 0.0.0.0/0）。
 - 部署：服务器已更新 bundle `index-BYRwqnuI.js` + 新代理，重启后 health ok。
+
+### 2026-09-01 10:00
+- 公网打通（用户已在腾讯云控制台放行）：http://49.232.16.132:8787/finance-penguin/ 返回 200（43ms）。
+- 密码门 Safari 报错修复：根因是密码门用 `crypto.subtle.digest(SHA-256)`，而 WebCrypto 仅在 HTTPS/localhost 可用，http 访问下 Safari/Chrome 均禁用 → 报「不支持加密校验」。已在 index.html 加入纯 JS SHA-256 降级（`sha256Hex`），`crypto.subtle` 不可用时自动走降级；本地 node 校验算法与 HASH 一致（CHEZHI → f00d0e94…）。
+- 端到端验证（headless Chrome 直连公网 http）：crypto.subtle 不可用（确认根因）；错误密码提示「密码错误」、正确密码 CHEZHI 解锁进入应用（root 渲染正常）。
+- 服务器已部署新 index.html 并重启；提醒用户 Safari 需强制刷新（Cmd+Shift+R）加载新页面。
