@@ -315,6 +315,203 @@ async function handleResolve(req, res) {
   return json(res, 404, { error: `未能识别「${input.trim()}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。` })
 }
 
+const PORTFOLIO_SYSTEM_PROMPT = `你是「Finance Penguin」的 A 股组合体检引擎。你会收到用户当前组合名单（股票代码、名称、模拟仓位权重）、实时行情快照（真实价格与涨跌幅）以及可选的用户交易系统原文。请完成一次组合健康度分析，只输出紧凑 JSON（不要输出任何额外文字或 Markdown 代码块）。
+
+产品规则：
+1. 不荐股、不承诺收益、不下买卖指令；所有评分代表「组合结构健康度与值得跟踪的程度」，不是收益预测。
+2. 数据边界：行情为真实实时快照（附抓取时间）；财报/消息类信息只使用公开常识，缺少数据时如实说明，不得编造具体数字、公告或订单；价格与涨跌幅必须使用快照真实数值。
+3. 主题归组：把名单按真实业务/产业链归入主题（如 AI 算力链、消费白酒、新能源、银行金融），theme 数量不超过 4 个；无法归类的写「其他」。
+4. items 基础判断：对每只股票给出 role（组合中的角色）、opportunity（机会）、risk（主要风险），必须结合快照真实行情（涨跌、估值常识）给出，禁止空泛套话。
+5. management 组合管理：给出 3~5 条具体建议（主题集中度、仓位上限、高波动标的控制、防御资产、与用户交易系统的冲突检查）。用户提供了交易系统时必须逐条核对并指出冲突；未提供则如实说明。
+6. combinations 优化组合建议：只能由当前名单中的股票组成子组合（可调整权重侧重），给出 0~3 个比当前评分更优的组合；找不到更优则为空数组。
+7. 权重口径：主题权重、aiWeight（AI 算力链合计权重）、defensiveWeight（防御资产合计权重，如白酒/银行/现金类）按名单模拟仓位权重加总，输出 0-100 数字（可含小数）；maxTheme 为权重最高的主题。
+8. score：0-100 整数，综合考虑主题集中度、风险重叠、高波动暴露、防御比例与仓位结构，代表健康度而非收益。
+9. 全部输出中文；marketNote 写「基于 YYYY-MM-DD HH:MM 实时行情与 AI 分析，非投资建议」；note 写一段对当前组合结构的总结。
+
+输出 JSON 结构：
+{"score":0,"maxTheme":{"theme":"","weight":0,"names":[]},"themes":[{"theme":"","weight":0,"names":[]}],"aiWeight":0,"defensiveWeight":0,"items":[{"code":"","name":"","role":"","opportunity":"","risk":""}],"management":[""],"combinations":[{"names":[],"reason":"","score":0}],"note":"","marketNote":""}`
+
+const REVIEW_SYSTEM_PROMPT = `你是「Finance Penguin」的 A 股交易复盘教练。你会收到：复盘对象（个股或组合）、原观察计划（触发价/失效价/仓位等，若有）、用户记录的实际操作、当时判断、盈亏结果与问题，以及实时行情快照（真实价格）。请完成一次结构化复盘，只输出紧凑 JSON（不要输出任何额外文字或 Markdown 代码块）。
+
+产品规则：
+1. 复盘目的是检查「操作是否与计划一致」，不是判断对错；不荐股、不承诺收益、不追责。
+2. 数据边界：行情为真实实时快照（附抓取时间）；若快照含复盘标的，用当前真实价格对比原计划触发价/失效价并指出偏离（如「当前 ¥xx 高于原失效价 ¥xx」）；快照缺失时如实说明，不得编造价格。
+3. 区分两类因素：不可控（行情、系统性波动、突发公告）与可优化（入场位置、仓位纪律、复核纪律、情绪化处理）；issues 只给可优化项。
+4. comparisons 为「计划 vs 实际」对比表，每行 [步骤, 原计划, 实际, 判定]，判定为「可优化」或「不可控」。
+5. 若提供交易系统，逐条核对是否违反；未提供则如实说明。
+6. 全部输出中文；marketNote 写「基于 YYYY-MM-DD HH:MM 实时行情与 AI 分析，非投资建议」。
+
+输出 JSON 结构：
+{"targetName":"","conclusion":"","positives":[""],"issues":[""],"unavoidable":[""],"nextActions":[""],"comparisons":[["步骤","原计划","实际","判定"]],"marketNote":""}`
+
+function buildPortfolioPrompt({ items, quotes, tradingSystem }) {
+  return [
+    `用户组合名单（JSON）：${JSON.stringify(items || [])}`,
+    `实时行情快照（JSON）：${JSON.stringify(quotes || [])}`,
+    `用户交易系统：${tradingSystem || '未提供'}`,
+    `当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+  ].join('\n')
+}
+
+function buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question }) {
+  const plan = archive
+    ? { entryPrice: archive.entryPrice, stopPrice: archive.stopPrice, takeRange: archive.takeRange, initialPosition: archive.initialPosition, maxPosition: archive.maxPosition }
+    : null
+  return [
+    `复盘对象：${mode === 'stock' ? `个股「${targetName}」` : `组合（${items?.length || 0} 只）`}`,
+    `原观察计划（JSON）：${plan ? JSON.stringify(plan) : '未提供'}`,
+    `用户实际操作：${operation || '未填写'}`,
+    `当时判断：${reason || '未填写'}`,
+    `盈亏结果：${result || ''}${pnl ? `（${pnl}）` : ''}`,
+    `用户问题：${question || '未填写'}`,
+    `实时行情快照（JSON）：${JSON.stringify(quotes || [])}`,
+    `用户交易系统：${tradingSystem || '未提供'}`,
+    `当前时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+  ].join('\n')
+}
+
+async function callChatJson(key, messages, degraded) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { res, data } = await callDeepSeek(key, messages, degraded)
+    if (!res.ok) return { ok: false, status: res.status, error: data?.error?.message || '未知错误' }
+    const content = data?.choices?.[0]?.message?.content || ''
+    const parsed = extractJson(content)
+    if (parsed) return { ok: true, parsed, model: data?.model }
+    if (attempt === 0) continue
+    return { ok: false, status: 502, error: 'AI 返回内容无法解析为 JSON，请重试。' }
+  }
+  return { ok: false, status: 502, error: 'AI 返回内容无法解析为 JSON，请重试。' }
+}
+
+async function handlePortfolio(req, res) {
+  const key = resolveDeepSeekKey()
+  if (!key) return json(res, 503, { error: '未找到 DeepSeek API key，请先配置。' })
+  let body
+  try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
+  const { items, quotes, tradingSystem, degraded } = body || {}
+  if (!Array.isArray(items) || items.length < 2) return json(res, 400, { error: '至少需要 2 只股票才能做组合体检。' })
+  const messages = [
+    { role: 'system', content: PORTFOLIO_SYSTEM_PROMPT },
+    { role: 'user', content: buildPortfolioPrompt({ items, quotes, tradingSystem }) },
+  ]
+  try {
+    const result = await callChatJson(key, messages, Boolean(degraded))
+    if (!result.ok) return json(res, result.status || 502, { error: result.error })
+    console.log(`[portfolio] ok · model=${result.model} · tokens=?`)
+    return json(res, 200, { result: result.parsed, model: result.model })
+  } catch (err) {
+    console.error('[portfolio] error:', err.message)
+    return json(res, 502, { error: `AI 组合体检失败：${err.message}` })
+  }
+}
+
+async function handleReview(req, res) {
+  const key = resolveDeepSeekKey()
+  if (!key) return json(res, 503, { error: '未找到 DeepSeek API key，请先配置。' })
+  let body
+  try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
+  const { mode, targetName, archive, items, quotes, tradingSystem, degraded, operation, reason, result, pnl, question } = body || {}
+  const messages = [
+    { role: 'system', content: REVIEW_SYSTEM_PROMPT },
+    { role: 'user', content: buildReviewPrompt({ mode, targetName, archive, items, quotes, tradingSystem, operation, reason, result, pnl, question }) },
+  ]
+  try {
+    const out = await callChatJson(key, messages, Boolean(degraded))
+    if (!out.ok) return json(res, out.status || 502, { error: out.error })
+    console.log(`[review] ok · model=${out.model}`)
+    return json(res, 200, { result: out.parsed, model: out.model })
+  } catch (err) {
+    console.error('[review] error:', err.message)
+    return json(res, 502, { error: `AI 复盘失败：${err.message}` })
+  }
+}
+
+async function resolveBatchWithDeepSeek(key, inputs) {
+  const messages = [
+    { role: 'system', content: '你是 A 股股票识别器。用户可能输入股票名称、简称、错别字、谐音或多打少打字。请逐个判断每个输入最可能指代的 A 股股票（可纠正错别字/谐音/模糊简称，如「语数科技」→「宇树科技」，「微机谐波」→「绿的谐波」）。注意：当前是 2026 年 9 月，A 股常有新上市公司（如宇树科技 688836.SH 已在科创板上市），不要凭旧知识断定某公司未上市。只输出紧凑 JSON：{"results":[{"input":"原输入","name":"判断的股票名称","code":"6位代码+市场后缀或空字符串"}]}；name 给出最可能猜测，code 只有相当确定时才填，不确定留空，不要编造代码。' },
+    { role: 'user', content: `待识别输入（每行一个）：\n${inputs.join('\n')}` },
+  ]
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const payload = { model: MODEL, messages, temperature: 0.2, max_tokens: 1200, response_format: { type: 'json_object' } }
+    const signal = AbortSignal.timeout(45_000)
+    let res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(payload),
+      signal,
+    })
+    if (res.status === 400) {
+      delete payload.response_format
+      res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(payload),
+        signal,
+      })
+    }
+    if (!res.ok) continue
+    const data = await res.json()
+    const parsed = extractJson(data?.choices?.[0]?.message?.content || '')
+    const results = parsed?.results
+    if (Array.isArray(results)) return results
+  }
+  return null
+}
+
+async function handleResolveBatch(req, res) {
+  let body
+  try { body = await readJson(req) } catch { return json(res, 400, { error: '请求体不是合法 JSON' }) }
+  const { inputs } = body || {}
+  const cleaned = Array.isArray(inputs) ? inputs.map((i) => String(i || '').trim()).filter(Boolean) : []
+  if (!cleaned.length) return json(res, 400, { error: '缺少输入内容' })
+
+  const results = []
+  const needAi = []
+  for (const input of cleaned) {
+    const direct = parseDirectCode(input)
+    if (direct) {
+      results.push({ input, ok: true, code: direct.code, name: direct.name, source: 'direct' })
+    } else {
+      needAi.push(input)
+    }
+  }
+
+  if (needAi.length) {
+    const key = resolveDeepSeekKey()
+    const aiResults = key ? await resolveBatchWithDeepSeek(key, needAi) : null
+    for (const input of needAi) {
+      const ai = Array.isArray(aiResults) ? aiResults.find((r) => String(r?.input || '').trim() === input) : null
+      const aiName = String(ai?.name || '').trim()
+      let best = null
+      // 用 AI 判断出的名称去东财搜索拿权威代码（名称→代码映射）
+      if (aiName && aiName !== input) {
+        try {
+          const em = await resolveFromEastmoney(aiName)
+          if (em) best = { ...em, source: 'deepseek' }
+        } catch { /* ignore */ }
+      }
+      if (!best) {
+        try {
+          const em = await resolveFromEastmoney(input)
+          if (em) best = { ...em, source: 'eastmoney' }
+        } catch { /* ignore */ }
+      }
+      if (!best && ai?.code) {
+        const code = String(ai.code).trim().toUpperCase()
+        if (/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
+          const match = await verifyQuoteName(code, aiName || input)
+          if (match !== false) best = { code, name: aiName || input, source: 'deepseek' }
+        }
+      }
+      results.push(best
+        ? { input, ok: true, code: best.code, name: best.name, source: best.source }
+        : { input, ok: false })
+    }
+  }
+
+  return json(res, 200, { results })
+}
+
 const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt'])
 const staticCache = new Map()
 
@@ -359,6 +556,9 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/api/analyze' && req.method === 'POST') return handleAnalyze(req, res)
   if (url.pathname === '/api/resolve' && req.method === 'POST') return handleResolve(req, res)
+  if (url.pathname === '/api/resolve-batch' && req.method === 'POST') return handleResolveBatch(req, res)
+  if (url.pathname === '/api/portfolio' && req.method === 'POST') return handlePortfolio(req, res)
+  if (url.pathname === '/api/review' && req.method === 'POST') return handleReview(req, res)
   if (url.pathname.startsWith('/api/')) return json(res, 404, { error: 'not found' })
   if (url.pathname === '/' || url.pathname === '') {
     res.writeHead(302, { Location: '/finance-penguin/' })

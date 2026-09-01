@@ -128,34 +128,38 @@ const fallbackScores = [
   { label: '风险可控度', value: 62, help: '一周波动与事件风险中等' },
 ]
 
-const stockProfiles: Record<string, { code: string; name: string; theme: string; role: string; opportunity: string; risk: string; baseScore: number; volatility: '低' | '中' | '高'; defensive: boolean }> = {
-  '300308.SZ': { code: '300308.SZ', name: '中际旭创', theme: 'AI 算力链', role: '高速互联弹性资产', opportunity: '高速光模块需求延续，受益于 AI 集群扩容。', risk: '估值和订单预期敏感，海外需求变化会放大波动。', baseScore: 81, volatility: '高', defensive: false },
-  '000977.SZ': { code: '000977.SZ', name: '浪潮信息', theme: 'AI 算力链', role: '服务器需求验证资产', opportunity: '服务器采购能直接验证算力资本开支兑现。', risk: '利润率与产品结构仍需持续确认。', baseScore: 78, volatility: '高', defensive: false },
-  '002837.SZ': { code: '002837.SZ', name: '英维克', theme: 'AI 配套设施', role: '液冷配套观察资产', opportunity: '机柜功率密度提升带来温控和液冷增量。', risk: '业务占比和订单兑现节奏仍不透明。', baseScore: 72, volatility: '中', defensive: false },
-  '600519.SH': { code: '600519.SH', name: '贵州茅台', theme: '消费白酒', role: '防御型核心资产', opportunity: '品牌壁垒和现金流稳定，有助于降低组合波动。', risk: '短期修复依赖消费数据和市场风险偏好。', baseScore: 76, volatility: '低', defensive: true },
-  '000858.SZ': { code: '000858.SZ', name: '五粮液', theme: '消费白酒', role: '白酒板块对照资产', opportunity: '可验证白酒板块共振与估值修复。', risk: '行业共同压力可能削弱修复持续性。', baseScore: 71, volatility: '中', defensive: true },
-  '000568.SZ': { code: '000568.SZ', name: '泸州老窖', theme: '消费白酒', role: '弹性消费资产', opportunity: '估值弹性较高，适合观察板块修复强度。', risk: '波动高于高端白酒核心资产。', baseScore: 67, volatility: '中', defensive: false },
-  '300750.SZ': { code: '300750.SZ', name: '宁德时代', theme: '新能源', role: '新能源周期核心资产', opportunity: '电池龙头具备产业链话语权。', risk: '受价格竞争、政策周期和海外需求影响。', baseScore: 74, volatility: '高', defensive: false },
-  '600036.SH': { code: '600036.SH', name: '招商银行', theme: '银行金融', role: '组合稳定器', opportunity: '盈利稳定和分红属性有助于平衡成长股波动。', risk: '受宏观信用周期和地产链风险影响。', baseScore: 79, volatility: '低', defensive: true },
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ''
+
+// 首页行情演示池：进入页面时抓取这些标的的实时行情作为行情底池
+const DEMO_QUOTE_CODES = ['000977.SZ', '300308.SZ', '002837.SZ', '600519.SH', '688836.SH', '688017.SH']
+
+type PortfolioReport = {
+  score: number
+  totalWeight: number
+  maxTheme: [string, { weight: number; names: string[] }] | null
+  themes: Record<string, { weight: number; names: string[] }>
+  aiWeight: number
+  defensiveWeight: number
+  items: { code: string; name: string; profile: { role: string; opportunity: string; risk: string; theme: string } }[]
+  management: string[]
+  combinations: { names: string[]; reason: string; score: number }[]
+  note: string
+  marketNote: string
 }
 
-const stockAliases: Record<string, string> = Object.values(stockProfiles).reduce((acc, item) => {
-  acc[item.name] = item.code
-  acc[item.code] = item.code
-  acc[item.code.replace(/\.(SZ|SH)$/, '')] = item.code
-  return acc
-}, {} as Record<string, string>)
-
-function normalizePortfolioInput(input: string): PortfolioItem[] {
-  const now = new Date().toISOString()
-  return input.split(/[\n,，;；]+/).map((raw) => raw.trim()).filter(Boolean).map<PortfolioItem | null>((raw) => {
-    const matchedKey = Object.keys(stockAliases).find((key) => raw.includes(key))
-    if (!matchedKey) return null
-    const profile = stockProfiles[stockAliases[matchedKey]]
-    const weightMatch = raw.match(/(\d+(?:\.\d+)?)\s*%/)
-    return { code: profile.code, name: profile.name, weight: weightMatch ? Number(weightMatch[1]) : 5, source: '手动' as const, addedAt: now }
-  }).filter((item): item is PortfolioItem => Boolean(item))
+type ReviewReport = {
+  targetName: string
+  conclusion: string
+  positives: string[]
+  issues: string[]
+  unavoidable: string[]
+  nextActions: string[]
+  comparisons: string[][]
+  marketNote: string
 }
+
+const EMPTY_PORTFOLIO: PortfolioReport = { score: 0, totalWeight: 0, maxTheme: null, themes: {}, aiWeight: 0, defensiveWeight: 0, items: [], management: [], combinations: [], note: '', marketNote: '' }
+const EMPTY_REVIEW: ReviewReport = { targetName: '', conclusion: '', positives: [], issues: [], unavoidable: [], nextActions: [], comparisons: [], marketNote: '' }
 
 function getScoreTone(score: number) {
   return score >= 75 ? 'high' : score >= 60 ? 'medium' : 'low'
@@ -217,6 +221,9 @@ export default function HomePage() {
   const [portfolioDraft, setPortfolioDraft] = useState('中际旭创 5%\n浪潮信息 4%\n贵州茅台 8%\n宁德时代 6%\n招商银行 10%')
   const [portfolioError, setPortfolioError] = useState('')
   const [portfolioReportReady, setPortfolioReportReady] = useState(false)
+  const [portfolioLoading, setPortfolioLoading] = useState(false)
+  const [portfolioAdding, setPortfolioAdding] = useState(false)
+  const [portfolioLive, setPortfolioLive] = useState<PortfolioReport | null>(null)
   const [reviewMode, setReviewMode] = useState<ReviewMode>('stock')
   const [reviewArchive, setReviewArchive] = useState<ArchiveRecord | null>(null)
   const [reviewOperation, setReviewOperation] = useState('我在 168 元买入中际旭创，仓位 10%。后来跌到 156 元没有止损，反弹到 162 元卖出。')
@@ -226,6 +233,8 @@ export default function HomePage() {
   const [reviewQuestion, setReviewQuestion] = useState('这次亏损是行情问题，还是我没有遵守原计划？')
   const [reviewError, setReviewError] = useState('')
   const [reviewReportReady, setReviewReportReady] = useState(false)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewLive, setReviewLive] = useState<ReviewReport | null>(null)
   const [reviewRecords, setReviewRecords] = useState<ReviewRecord[]>(() => {
     try { return JSON.parse(storageGet('thesis-ai-reviews') || '[]') as ReviewRecord[] } catch { return [] }
   })
@@ -303,100 +312,14 @@ export default function HomePage() {
   }, [toast])
 
   const portfolioAnalysis = useMemo(() => {
-    const items = portfolioItems.map((item) => ({ ...item, profile: stockProfiles[item.code] })).filter((item) => item.profile)
-    const totalWeight = items.reduce((sum, item) => sum + item.weight, 0)
-    const themes = items.reduce((acc, item) => {
-      const theme = item.profile.theme
-      acc[theme] = acc[theme] || { weight: 0, names: [] as string[] }
-      acc[theme].weight += item.weight
-      acc[theme].names.push(item.name)
-      return acc
-    }, {} as Record<string, { weight: number; names: string[] }>)
-    const maxTheme = Object.entries(themes).sort((a, b) => b[1].weight - a[1].weight)[0]
-    const highVolCount = items.filter((item) => item.profile.volatility === '高').length
-    const defensiveWeight = items.filter((item) => item.profile.defensive).reduce((sum, item) => sum + item.weight, 0)
-    const aiWeight = themes['AI 算力链']?.weight || 0
-    const concentrationPenalty = maxTheme ? Math.max(0, maxTheme[1].weight - 8) * 2 : 0
-    const overlapPenalty = items.filter((item) => item.profile.theme === 'AI 算力链').length > 1 ? 8 : 0
-    const volatilityPenalty = highVolCount * 3
-    const defensiveBonus = defensiveWeight >= 12 ? 8 : defensiveWeight >= 6 ? 4 : 0
-    const score = Math.max(48, Math.min(92, Math.round(82 - concentrationPenalty - overlapPenalty - volatilityPenalty + defensiveBonus)))
-    const combinations = [
-      { names: ['贵州茅台', '招商银行'], score: 86, reason: '防御资产占比提升，主题波动明显下降。' },
-      { names: ['中际旭创', '招商银行'], score: 79, reason: '保留 AI 弹性，同时加入低波动金融资产作为稳定器。' },
-      { names: ['浪潮信息', '贵州茅台', '招商银行'], score: 82, reason: '降低同主题重复暴露，并保留一个算力验证资产。' },
-      { names: ['中际旭创', '浪潮信息'], score: 60, reason: '主题集中度过高，主要风险来源重叠。' },
-      { names: ['中际旭创', '宁德时代'], score: 58, reason: '高波动成长资产占比偏高，缺少稳定器。' },
-    ].filter((combo) => combo.score > score && combo.score >= 75 && combo.names.every((name) => items.some((item) => item.name === name)))
-    return { items, themes, maxTheme, highVolCount, defensiveWeight, aiWeight, totalWeight, score, combinations }
-  }, [portfolioItems])
+    if (!portfolioLive) return EMPTY_PORTFOLIO
+    return portfolioLive
+  }, [portfolioLive])
 
   const reviewAnalysis = useMemo(() => {
-    const targetName = reviewMode === 'stock' ? (reviewArchive?.name || '当前个股') : '当前组合'
-    const sourceTitle = reviewMode === 'stock' ? (reviewArchive ? getArchiveFileName(reviewArchive) : '未选择档案') : `${portfolioItems.length} 只组合名单`
-    const operationText = reviewOperation.trim()
-    const reasonText = reviewReason.trim()
-    const questionText = reviewQuestion.trim()
-    const pnlText = reviewPnl.trim() || '未填写'
-    const shortOperation = operationText.length > 72 ? `${operationText.slice(0, 72)}…` : operationText
-    const shortReason = reasonText.length > 68 ? `${reasonText.slice(0, 68)}…` : reasonText
-    const isLoss = reviewResult === '亏损'
-    const conclusion = reviewMode === 'stock'
-      ? `本次${targetName}复盘的关键不是判断对错，而是操作是否跟计划一致。你记录的结果是 ${reviewResult} ${pnlText}；从描述看，主要问题集中在入场位置、仓位和跌破复核点后的处理。`
-      : `本次组合复盘重点在风险是否集中。结果是 ${reviewResult} ${pnlText}；需要把主题暴露、仓位上限和防御资产比例拆开看。`
-    const positives = [
-      `你写清了实际操作：${shortOperation || '暂无完整操作描述'}。这让复盘可以落到动作，而不是停留在情绪。`,
-      `你补充了当时判断：${shortReason || '暂无判断原因'}。这能定位决策依据是否可靠。`,
-      questionText ? `你提出了明确问题：${questionText}。后续回答可以直接围绕这个问题展开。` : '你已记录盈亏结果，后续可以继续补充最想追问的问题。',
-    ]
-    const issues = reviewMode === 'stock'
-      ? [
-        `入场纪律：如果原计划等待确认，但实际在更高位置买入，说明执行动作早于证据。`,
-        `仓位纪律：一次性接近或超过计划上限，会放大一次判断失误的影响。`,
-        `复核纪律：跌破关键价后没有立即复核，而是等反弹再处理，容易把风险控制变成情绪等待。`,
-      ]
-      : [
-        `组合集中：如果多只股票依赖同一主线，回撤时会一起下跌，分散效果会变弱。`,
-        `仓位边界：缺少单一主题上限时，行情好时容易越买越集中。`,
-        `防御不足：缺少低波动资产时，组合净值会更受情绪和主题波动影响。`,
-      ]
-    const unavoidable = reviewMode === 'stock'
-      ? [
-        `${targetName}所在板块的整体风险偏好变化，不是单个用户可以提前完全控制的。`,
-        `盘中波动、隔夜消息和板块联动可能让价格直接偏离原计划。`,
-        isLoss ? '亏损不必全部归因于个人能力；但可控动作需要单独记录并修正。' : '盈利也不代表流程一定正确，仍要检查是否违反计划。',
-      ]
-      : [
-        '市场系统性回撤无法完全提前规避。',
-        '同主题资产在压力期相关性会上升，组合会短暂失去分散效果。',
-        '突发公告和板块流动性变化通常不是复盘者能事前完全控制的。',
-      ]
-    const nextActions = reviewMode === 'stock'
-      ? [
-        `下次下单前写一句硬规则：什么价格可以入场，什么价格必须复核。`,
-        `首次仓位先限制在计划上限内，不用一次动作证明判断。`,
-        `跌破复核价时先暂停加仓和补仓，重新回答“原假设是否还成立”。`,
-      ]
-      : [
-        '先设单一主题上限，再决定每只股票仓位。',
-        '把同一逻辑驱动的股票归为一组，不要当成天然分散。',
-        '每次大幅波动后，先检查组合结构，再评价单只股票。',
-      ]
-    const comparisons = reviewMode === 'stock'
-      ? [
-        ['入场', `原计划等待 ¥${reviewArchive?.entryPrice || 162} 附近确认`, '实际描述中存在提前或较高位置买入', '可优化'],
-        ['仓位', `首次 ${reviewArchive?.initialPosition || '5%'}，确认后最高 ${reviewArchive?.maxPosition || '10%'}`, '仓位接近最高上限', '可优化'],
-        ['复核', `跌破 ¥${reviewArchive?.stopPrice || 157} 后重新判断`, '跌破后继续等待反弹', '可优化'],
-        ['行情', '接受板块波动和突发消息影响', '结果受外部行情影响', '不可控'],
-      ]
-      : [
-        ['主题', '单一主题不应成为主要风险来源', '多只股票依赖同一主线', '可优化'],
-        ['分散', '不同资产应依赖不同盈利前提', '相关性在回撤中上升', '可优化'],
-        ['防御', '低波动资产降低回撤', '稳定器占比不足', '可优化'],
-        ['行情', '接受系统性波动', '组合受市场影响', '不可控'],
-      ]
-    return { targetName, sourceTitle, conclusion, positives, issues, unavoidable, nextActions, comparisons }
-  }, [portfolioItems.length, reviewArchive, reviewMode, reviewOperation, reviewPnl, reviewQuestion, reviewReason, reviewResult])
+    if (!reviewLive) return EMPTY_REVIEW
+    return reviewLive
+  }, [reviewLive])
 
   const activeCommittee = useMemo(() => {
     const completedCount = stage === 'verdict' ? activeMembers.length : Math.max(0, Math.floor(committeeTick / 2))
@@ -411,7 +334,7 @@ export default function HomePage() {
   }
 
   const loadQuotes = async (codes?: string[]) => {
-    const list = codes?.length ? codes : Object.keys(stockProfiles)
+    const list = codes?.length ? codes : DEMO_QUOTE_CODES
     setMarketRefreshing(true)
     try {
       const result = await fetchQuotes(list)
@@ -576,50 +499,157 @@ export default function HomePage() {
     setToast(`已将 ${item.name} 添加入组合名单`)
   }
   const addArchiveToPortfolio = (archive: ArchiveRecord) => addPortfolioItem({ code: archive.code, name: archive.name, weight: 5, source: '档案', addedAt: new Date().toISOString() })
-  const addManualPortfolioItems = () => {
-    const parsed = normalizePortfolioInput(portfolioDraft)
-    if (parsed.length === 0) { setPortfolioError('未识别到可添加的 A 股标的，请输入示例中的股票名称、代码或仓位。'); return }
-    setPortfolioError('')
-    setPortfolioItems((items) => [...parsed, ...items.filter((existing) => !parsed.some((item) => item.code === existing.code))])
-    setPortfolioReportReady(false)
-    setToast(`已添加 ${parsed.length} 只股票到组合名单`)
+  const addManualPortfolioItems = async () => {
+    const lines = portfolioDraft.split(/[\n,，;；]+/).map((raw) => raw.trim()).filter(Boolean)
+    if (!lines.length) { setPortfolioError('请输入至少一个股票名称或 6 位代码。'); return }
+    setPortfolioError(''); setPortfolioAdding(true)
+    const entries = lines.map((raw) => {
+      const weightMatch = raw.match(/(\d+(?:\.\d+)?)\s*%/)
+      return { raw, name: raw.replace(/(\d+(?:\.\d+)?)\s*%/, '').trim(), weight: weightMatch ? Number(weightMatch[1]) : 5 }
+    })
+    try {
+      const resp = await fetch(`${API_BASE}/api/resolve-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: entries.map((entry) => entry.name) }),
+        signal: AbortSignal.timeout(90_000),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok || data.error) throw new Error(data.error || '股票识别服务异常，请重试。')
+      const ok: PortfolioItem[] = []
+      const failed: string[] = []
+      for (const entry of entries) {
+        const r = (data.results || []).find((x: { input: string; code?: string; name?: string }) => x.input === entry.name)
+        if (r?.ok && r.code) ok.push({ code: r.code, name: r.name || entry.name, weight: entry.weight, source: '手动', addedAt: new Date().toISOString() })
+        else failed.push(entry.raw)
+      }
+      if (ok.length) {
+        setPortfolioItems((items) => [...ok, ...items.filter((existing) => !ok.some((item) => item.code === existing.code))])
+        setPortfolioReportReady(false)
+        setPortfolioLive(null)
+        setToast(`已添加 ${ok.length} 只股票到组合名单`)
+        void fetchQuotes(ok.map((item) => item.code)).then((quoteResult) => {
+          if (Object.keys(quoteResult).length) { setQuotes((prev) => ({ ...prev, ...quoteResult })); setQuotesAt(Date.now()) }
+        }).catch(() => {})
+      }
+      if (failed.length) setPortfolioError(`以下未能识别，请确认名称或直接输入 6 位代码：${failed.join('、')}`)
+    } catch (err) {
+      setPortfolioError(err instanceof Error ? err.message : '股票识别失败，请重试。')
+    } finally {
+      setPortfolioAdding(false)
+    }
   }
-  const removePortfolioItem = (code: string) => { setPortfolioItems((items) => items.filter((item) => item.code !== code)); setPortfolioReportReady(false) }
-  const runPortfolioAnalysis = () => {
+  const removePortfolioItem = (code: string) => { setPortfolioItems((items) => items.filter((item) => item.code !== code)); setPortfolioReportReady(false); setPortfolioLive(null) }
+  const runPortfolioAnalysis = async () => {
     if (portfolioItems.length < 2) { setPortfolioError('至少添加 2 只股票后才能生成组合综合分析。'); return }
     const gate = tryUsePremium(plan)
     setPlan(gate.plan)
     if (!gate.ok) { setPortfolioError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
-    setPortfolioError(''); setPortfolioReportReady(true)
-    window.setTimeout(() => document.querySelector('#portfolio-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
+    setPortfolioError(''); setPortfolioLoading(true); setPortfolioReportReady(false)
+    try {
+      const codes = portfolioItems.map((item) => item.code)
+      const quoteResult = await fetchQuotes(codes)
+      const quotes = codes.map((code) => quoteResult[code]).filter(Boolean)
+      const tracked = trackAnalysis(plan)
+      setPlan(tracked.plan)
+      const resp = await fetch(`${API_BASE}/api/portfolio`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: portfolioItems, quotes, tradingSystem: tradingSystem?.text, degraded: tracked.degraded }),
+        signal: AbortSignal.timeout(200_000),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok || data.error) throw new Error(data.error || `组合体检失败（HTTP ${resp.status}）`)
+      const raw = data.result || {}
+      const themes: Record<string, { weight: number; names: string[] }> = {}
+      for (const t of raw.themes || []) themes[String(t.theme)] = { weight: Number(t.weight) || 0, names: Array.isArray(t.names) ? t.names : [] }
+      const totalWeight = portfolioItems.reduce((sum, item) => sum + item.weight, 0)
+      const live: PortfolioReport = {
+        score: Number(raw.score) || 0,
+        totalWeight,
+        maxTheme: raw.maxTheme ? [String(raw.maxTheme.theme), { weight: Number(raw.maxTheme.weight) || 0, names: Array.isArray(raw.maxTheme.names) ? raw.maxTheme.names : [] }] : null,
+        themes,
+        aiWeight: Number(raw.aiWeight) || 0,
+        defensiveWeight: Number(raw.defensiveWeight) || 0,
+        items: (raw.items || []).map((i: { code?: string; name?: string; role?: string; opportunity?: string; risk?: string }) => ({ code: String(i.code || ''), name: String(i.name || ''), profile: { role: String(i.role || ''), opportunity: String(i.opportunity || ''), risk: String(i.risk || ''), theme: '' } })),
+        management: Array.isArray(raw.management) ? raw.management : [],
+        combinations: Array.isArray(raw.combinations) ? raw.combinations : [],
+        note: String(raw.note || ''),
+        marketNote: String(raw.marketNote || ''),
+      }
+      setPortfolioLive(live)
+      if (Object.keys(quoteResult).length) { setQuotes((prev) => ({ ...prev, ...quoteResult })); setQuotesAt(Date.now()) }
+      setPortfolioReportReady(true)
+      window.setTimeout(() => document.querySelector('#portfolio-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
+    } catch (err) {
+      setPortfolioError(err instanceof Error ? err.message : '组合体检失败，请重试。')
+    } finally {
+      setPortfolioLoading(false)
+    }
   }
   const deepAnalyzePortfolioItem = (item: PortfolioItem) => {
-    setMode('stock'); setQuery(`我当前组合中关注 ${item.name}，请分析它在 ${stockProfiles[item.code]?.theme || '当前组合'} 中的风险与机会。`)
+    setMode('stock'); setQuery(`我当前组合中关注 ${item.name}（${item.code}），请分析它在当前组合中的风险与机会。`)
     setStage('input'); setSelected(null); setCommitteeTick(-1); setView('assistant'); setNavOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const startReviewFromArchive = (archive: ArchiveRecord) => {
     setReviewMode('stock'); setReviewArchive(archive); setReviewOperation(`我围绕 ${archive.name} 做了一次观察后的操作：价格、仓位和处理过程如下……`); setReviewReason(`当时参考了「${getArchiveFileName(archive)}」这次分析，但实际处理中有一些犹豫。`); setReviewResult('亏损'); setReviewPnl('-3.6%'); setReviewQuestion('这次结果主要是行情问题，还是我可以主动规避？'); setReviewError(''); setReviewReportReady(false); setActiveArchive(null); showReview()
   }
-  const runReview = () => {
-    if (reviewOperation.trim().length < 20 || reviewReason.trim().length < 10 || !reviewPnl.trim()) { setReviewError('请补充实际操作、当时判断和最终盈亏，AI 才能区分无法规避与可以优化。'); return }
+  const generateReview = async (opts: { operation: string; reason: string; result: '盈利' | '亏损' | '持平'; pnl: string; question: string; mode: ReviewMode; archive: ArchiveRecord | null; saveRecord: boolean }) => {
+    if (opts.operation.trim().length < 20 || opts.reason.trim().length < 10 || !opts.pnl.trim()) { setReviewError('请补充实际操作、当时判断和最终盈亏，AI 才能区分无法规避与可以优化。'); return }
     const gate = tryUsePremium(plan)
     setPlan(gate.plan)
     if (!gate.ok) { setReviewError(`免费版组合体检与复盘共用 ${FREE_PREMIUM_QUOTA} 次，已用完；升级专业版（29 元/月）不限次数。`); setPricingOpen(true); return }
-    setReviewError(''); setReviewReportReady(true)
-    const record: ReviewRecord = { id: `${Date.now()}`, mode: reviewMode, title: reviewArchive ? getArchiveFileName(reviewArchive) : (reviewMode === 'stock' ? '个股复盘' : '组合复盘'), result: reviewResult, pnl: reviewPnl, source: reviewAnalysis.sourceTitle, createdAt: new Date().toISOString(), operation: reviewOperation, reason: reviewReason, question: reviewQuestion, archiveId: reviewArchive?.id }
-    setReviewRecords((items) => [record, ...items].slice(0, 12))
-    window.setTimeout(() => document.querySelector('#review-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
+    setReviewError(''); setReviewLoading(true); setReviewReportReady(false)
+    try {
+      const targetName = opts.mode === 'stock' ? (opts.archive?.name || '当前个股') : '当前组合'
+      const codes = opts.mode === 'stock' ? (opts.archive?.code ? [opts.archive.code] : []) : portfolioItems.map((item) => item.code)
+      const quoteResult = await fetchQuotes(codes)
+      const quotes = codes.map((code) => quoteResult[code]).filter(Boolean)
+      const tracked = trackAnalysis(plan)
+      setPlan(tracked.plan)
+      const resp = await fetch(`${API_BASE}/api/review`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: opts.mode, targetName, archive: opts.archive, items: portfolioItems, quotes, tradingSystem: tradingSystem?.text, degraded: tracked.degraded, operation: opts.operation, reason: opts.reason, result: opts.result, pnl: opts.pnl, question: opts.question }),
+        signal: AbortSignal.timeout(200_000),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok || data.error) throw new Error(data.error || `复盘失败（HTTP ${resp.status}）`)
+      const raw = data.result || {}
+      const live: ReviewReport = {
+        targetName: String(raw.targetName || targetName),
+        conclusion: String(raw.conclusion || ''),
+        positives: Array.isArray(raw.positives) ? raw.positives : [],
+        issues: Array.isArray(raw.issues) ? raw.issues : [],
+        unavoidable: Array.isArray(raw.unavoidable) ? raw.unavoidable : [],
+        nextActions: Array.isArray(raw.nextActions) ? raw.nextActions : [],
+        comparisons: Array.isArray(raw.comparisons) ? raw.comparisons : [],
+        marketNote: String(raw.marketNote || ''),
+      }
+      setReviewLive(live)
+      if (opts.saveRecord) {
+        const sourceTitle = opts.mode === 'stock' ? (opts.archive ? getArchiveFileName(opts.archive) : '未选择档案') : `${portfolioItems.length} 只组合名单`
+        const record: ReviewRecord = { id: `${Date.now()}`, mode: opts.mode, title: opts.archive ? getArchiveFileName(opts.archive) : (opts.mode === 'stock' ? '个股复盘' : '组合复盘'), result: opts.result, pnl: opts.pnl, source: sourceTitle, createdAt: new Date().toISOString(), operation: opts.operation, reason: opts.reason, question: opts.question, archiveId: opts.archive?.id }
+        setReviewRecords((items) => [record, ...items].slice(0, 12))
+      }
+      setReviewReportReady(true)
+      window.setTimeout(() => document.querySelector('#review-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : '复盘失败，请重试。')
+    } finally {
+      setReviewLoading(false)
+    }
   }
+  const runReview = () => { void generateReview({ operation: reviewOperation, reason: reviewReason, result: reviewResult, pnl: reviewPnl, question: reviewQuestion, mode: reviewMode, archive: reviewArchive, saveRecord: true }) }
   const openReviewRecord = (record: ReviewRecord) => {
     setReviewMode(record.mode)
-    setReviewArchive(record.archiveId ? archives.find((item) => item.id === record.archiveId) || null : null)
+    const archive = record.archiveId ? archives.find((item) => item.id === record.archiveId) || null : null
+    setReviewArchive(archive)
     setReviewOperation(record.operation || (record.mode === 'stock' ? '这是一条旧复盘记录，原始操作未保存。' : '这是一条旧组合复盘记录，原始组合操作未保存。'))
     setReviewReason(record.reason || '这是一条旧复盘记录，原始判断原因未保存。')
-    setReviewResult(record.result === '盈利' || record.result === '持平' ? record.result : '亏损')
+    const result = record.result === '盈利' || record.result === '持平' ? record.result : '亏损'
+    setReviewResult(result)
     setReviewPnl(record.pnl)
     setReviewQuestion(record.question || '查看历史复盘报告')
-    setReviewReportReady(true)
-    window.setTimeout(() => document.querySelector('#review-report')?.scrollIntoView({ behavior: 'smooth' }), 30)
+    setReviewError(''); setReviewReportReady(false); setReviewLive(null)
+    void generateReview({ operation: record.operation || '这是一条旧复盘记录，原始操作未保存。', reason: record.reason || '这是一条旧复盘记录，原始判断原因未保存。', result, pnl: record.pnl || '-0%', question: record.question || '', mode: record.mode, archive, saveRecord: false })
   }
   const deleteArchive = (id: string) => { setArchives((items) => items.filter((item) => item.id !== id)); setActiveArchive(null); setToast('留档已删除') }
   const handleUpgrade = () => { const next = upgradePlan(); setPlan(next); setPricingOpen(false); setToast('已开通专业版会员') }
@@ -752,20 +782,20 @@ export default function HomePage() {
         <div className="verdict-grid"><div className="score-panel">{scores.map((item) => <div className="score-row" key={item.label}><div><strong>{item.label}</strong><span>{item.help}</span></div><div className="score-meter"><i style={{ width: `${item.value}%` }}/></div><b>{item.value}</b></div>)}</div><aside className="verdict-card"><span className="verdict-label">系统综合判断</span><h3>{live?.verdict.title ?? '暂不行动，继续观察'}</h3><p>{live?.verdict.conclusion ?? '业务关联与中期需求逻辑较强；市场反映程度和订单证据缺口构成主要扣分。建议用一周窗口观察价格确认与新增证据，不将评分理解为上涨概率。'}</p><div className="deduction"><AlertTriangle size={15}/><span>{live?.verdict.deduction || '主要扣分：市场拥挤、最新订单缺失、短期事件风险'}</span></div>{live?.marketNote && <div className="ai-disclaimer"><Database size={14}/><p>{live.marketNote}</p></div>}<button className="btn primary full" onClick={openRisk}><CalendarClock size={16}/>生成一周观察计划</button></aside></div>
       </section>}
       </> : view === 'portfolio' ? <section className="portfolio-page">
-        <div className="portfolio-hero"><div><h1>组合体检</h1></div><div className={`portfolio-total ${getScoreTone(portfolioAnalysis.score)}`}><span>组合评分</span><strong>{portfolioItems.length >= 2 ? portfolioAnalysis.score : '--'}</strong></div></div>
+        <div className="portfolio-hero"><div><h1>组合体检</h1></div><div className={`portfolio-total ${getScoreTone(portfolioAnalysis.score)}`}><span>组合评分</span><strong>{portfolioLive ? portfolioAnalysis.score : '--'}</strong></div></div>
         <div className="portfolio-layout">
-          <section className="panel portfolio-input-panel"><div className="section-head"><div><span className="section-no">01 / 添加组合</span><h2>录入股票</h2></div><Pill tone="success">我的组合</Pill></div><textarea className="portfolio-textarea" value={portfolioDraft} onChange={(event) => { setPortfolioDraft(event.target.value); setPortfolioError('') }} aria-invalid={Boolean(portfolioError)}/>{portfolioError && <div className="error"><AlertTriangle size={16}/><span>{portfolioError}</span></div>}<div className="portfolio-input-actions"><button className="btn secondary" onClick={() => setPortfolioDraft('中际旭创 5%\n浪潮信息 4%\n贵州茅台 8%\n宁德时代 6%\n招商银行 10%')}>填入示例</button><button className="btn primary" onClick={addManualPortfolioItems}><Plus size={15}/>添加到组合</button></div></section>
-          <section className="panel portfolio-list-panel"><div className="section-head"><div><span className="section-no">02 / 组合名单</span><h2>当前组合</h2></div><button className="btn primary" onClick={runPortfolioAnalysis}><PieChart size={15}/>综合分析</button></div>{portfolioItems.length === 0 ? <div className="portfolio-empty"><Layers3 size={28}/><h3>还没有组合名单</h3><p>先完成一次分析并留档，再点击“加入组合”；也可以从左侧示例直接添加。</p></div> : <div className="portfolio-holdings">{portfolioItems.map((item) => { const profile = stockProfiles[item.code]; return <article className="holding-card" key={item.code}><div><strong>{item.name}</strong><span>{item.code} · {profile?.theme || '未分类'} · 来源：{item.source}</span></div><div className="holding-weight"><b>{item.weight}%</b><small>模拟仓位</small></div><button className="icon-btn danger-icon" aria-label={`移除 ${item.name}`} onClick={() => removePortfolioItem(item.code)}><Trash2 size={15}/></button></article>})}</div>}</section>
+          <section className="panel portfolio-input-panel"><div className="section-head"><div><span className="section-no">01 / 添加组合</span><h2>录入股票</h2></div><Pill tone="success">我的组合</Pill></div><textarea className="portfolio-textarea" value={portfolioDraft} onChange={(event) => { setPortfolioDraft(event.target.value); setPortfolioError('') }} aria-invalid={Boolean(portfolioError)}/>{portfolioError && <div className="error"><AlertTriangle size={16}/><span>{portfolioError}</span></div>}<div className="portfolio-input-actions"><button className="btn secondary" onClick={() => setPortfolioDraft('中际旭创 5%\n浪潮信息 4%\n贵州茅台 8%\n宁德时代 6%\n招商银行 10%')}>填入示例</button><button className="btn primary" disabled={portfolioAdding} onClick={addManualPortfolioItems}>{portfolioAdding ? <><RefreshCw className="spin" size={15}/>AI 识别中…</> : <><Plus size={15}/>添加到组合</>}</button></div></section>
+          <section className="panel portfolio-list-panel"><div className="section-head"><div><span className="section-no">02 / 组合名单</span><h2>当前组合</h2></div><button className="btn primary" disabled={portfolioLoading} onClick={runPortfolioAnalysis}>{portfolioLoading ? <><RefreshCw className="spin" size={15}/>AI 分析中…</> : <><PieChart size={15}/>综合分析</>}</button></div>{portfolioItems.length === 0 ? <div className="portfolio-empty"><Layers3 size={28}/><h3>还没有组合名单</h3><p>先完成一次分析并留档，再点击“加入组合”；也可以从左侧示例直接添加。</p></div> : <div className="portfolio-holdings">{portfolioItems.map((item) => <article className="holding-card" key={item.code}><div><strong>{item.name}</strong><span>{item.code} · 来源：{item.source}</span></div><div className="holding-weight"><b>{item.weight}%</b><small>模拟仓位</small></div><button className="icon-btn danger-icon" aria-label={`移除 ${item.name}`} onClick={() => removePortfolioItem(item.code)}><Trash2 size={15}/></button></article>)}</div>}</section>
         </div>
         {portfolioReportReady && <section id="portfolio-report" className="portfolio-report block"><div className="section-head"><div><span className="section-no">03 / 综合分析报告</span><h2>组合评分与优化建议</h2><p>围绕当前名单给出基础判断、组合管理、交易系统冲突和绿色高分组合建议。</p></div><div className={`score-total portfolio-score ${getScoreTone(portfolioAnalysis.score)}`}><span>组合总分</span><strong>{portfolioAnalysis.score}</strong><em>/ 100</em></div></div>
           <div className="portfolio-summary-grid"><div><span>组合数量</span><strong>{portfolioItems.length} 只</strong><small>当前名单</small></div><div><span>模拟仓位合计</span><strong>{portfolioAnalysis.totalWeight}%</strong><small>不代表账户真实仓位</small></div><div><span>最大主题暴露</span><strong>{portfolioAnalysis.maxTheme ? `${portfolioAnalysis.maxTheme[0]} ${portfolioAnalysis.maxTheme[1].weight}%` : '--'}</strong><small>{portfolioAnalysis.maxTheme ? portfolioAnalysis.maxTheme[1].names.join('、') : '暂无'}</small></div><div><span>防御资产占比</span><strong>{portfolioAnalysis.defensiveWeight}%</strong><small>白酒与银行金融</small></div></div>
-          <div className="portfolio-report-grid"><section className="report-card"><h3><FileSearch size={16}/>基础判断</h3>{portfolioAnalysis.items.map((item) => <div className="judgement-row" key={item.code}><div><strong>{item.name}</strong><span>{item.profile.role}</span></div><p>{item.profile.opportunity}</p><small>主要风险：{item.profile.risk}</small><button className="btn ghost" onClick={() => deepAnalyzePortfolioItem(item)}>深入分析</button></div>)}</section><section className="report-card"><h3><Layers3 size={16}/>主题暴露与风险重叠</h3>{Object.entries(portfolioAnalysis.themes).map(([theme, info]) => <div className="theme-row" key={theme}><div><strong>{theme}</strong><span>{info.names.join('、')}</span></div><b>{info.weight}%</b></div>)}<p className="report-note">AI 算力链合计 {portfolioAnalysis.aiWeight}%。中际旭创与浪潮信息虽然环节不同，但主要风险都来自云厂商资本开支、订单兑现和估值拥挤。</p></section></div>
-          <div className="portfolio-report-grid"><section className="report-card"><h3><Scale size={16}/>组合管理</h3><ul className="report-list"><li>仓位管理：单只股票默认按输入比例评估，未输入时按 5% 处理。</li><li>资金管理：当前模拟仓位合计 {portfolioAnalysis.totalWeight}%，保留现金或低波动资产可降低回撤压力。</li><li>风险重叠：高波动标的 {portfolioAnalysis.highVolCount} 只，需避免同一主题连续加仓。</li><li>交易系统冲突：{tradingSystem ? '已检测用户交易系统，若单一主题上限为 10%，AI 算力链已接近或触及关注阈值。' : '尚未启用交易系统，无法检查个性化仓位规则。'}</li></ul></section><section className="report-card"><h3><Target size={16}/>优化组合建议</h3><div className={`combo-current ${getScoreTone(portfolioAnalysis.score)}`}><span>当前完整组合</span><strong>{portfolioItems.map((item) => item.name).join(' + ')}</strong><b>{portfolioAnalysis.score} 分</b></div>{portfolioAnalysis.score >= 75 ? <p className="report-note">当前组合已进入绿色区间，优先维持结构并定期复核高波动标的。</p> : portfolioAnalysis.combinations.length === 0 ? <p className="report-note">暂未找到高于当前组合且达到绿色区间的子组合，建议先补充防御资产或降低主题重复暴露。</p> : <div className="combo-list">{portfolioAnalysis.combinations.map((combo) => <div className="combo-card" key={combo.names.join('-')}><div><strong>{combo.names.join(' + ')}</strong><span>{combo.reason}</span></div><b>{combo.score}</b></div>)}</div>}</section></div>
-          <div className="ai-disclaimer"><ShieldCheck size={17}/><p>组合体检基于你录入的标的与实时行情快照生成，只用于结构诊断与复核优先级排序，不构成投资建议，也不代表收益预测或上涨概率。</p></div></section>}
+          <div className="portfolio-report-grid"><section className="report-card"><h3><FileSearch size={16}/>基础判断</h3>{portfolioAnalysis.items.map((item) => <div className="judgement-row" key={item.code}><div><strong>{item.name}</strong><span>{item.profile.role}</span></div><p>{item.profile.opportunity}</p><small>主要风险：{item.profile.risk}</small><button className="btn ghost" onClick={() => deepAnalyzePortfolioItem(item)}>深入分析</button></div>)}</section><section className="report-card"><h3><Layers3 size={16}/>主题暴露与风险重叠</h3>{Object.entries(portfolioAnalysis.themes).map(([theme, info]) => <div className="theme-row" key={theme}><div><strong>{theme}</strong><span>{info.names.join('、')}</span></div><b>{info.weight}%</b></div>)}<p className="report-note">{portfolioAnalysis.note}</p></section></div>
+          <div className="portfolio-report-grid"><section className="report-card"><h3><Scale size={16}/>组合管理</h3><ul className="report-list">{portfolioAnalysis.management.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card"><h3><Target size={16}/>优化组合建议</h3><div className={`combo-current ${getScoreTone(portfolioAnalysis.score)}`}><span>当前完整组合</span><strong>{portfolioItems.map((item) => item.name).join(' + ')}</strong><b>{portfolioAnalysis.score} 分</b></div>{portfolioAnalysis.score >= 75 ? <p className="report-note">当前组合已进入绿色区间，优先维持结构并定期复核高波动标的。</p> : portfolioAnalysis.combinations.length === 0 ? <p className="report-note">暂未找到高于当前组合且达到绿色区间的子组合，建议先补充防御资产或降低主题重复暴露。</p> : <div className="combo-list">{portfolioAnalysis.combinations.map((combo) => <div className="combo-card" key={combo.names.join('-')}><div><strong>{combo.names.join(' + ')}</strong><span>{combo.reason}</span></div><b>{combo.score}</b></div>)}</div>}</section></div>
+          <p className="report-note portfolio-market-note">{portfolioAnalysis.marketNote}</p><div className="ai-disclaimer"><ShieldCheck size={17}/><p>组合体检基于你录入的标的与实时行情快照生成，只用于结构诊断与复核优先级排序，不构成投资建议，也不代表收益预测或上涨概率。</p></div></section>}
       </section> : view === 'review' ? <section className="review-page">
         <div className="portfolio-hero review-hero"><div><h1>复盘教练</h1></div><div className="portfolio-total high"><span>历史复盘</span><strong>{reviewRecords.length}</strong></div></div>
-        <div className="review-layout"><section className="panel review-input-panel"><div className="section-head"><div><span className="section-no">01 / 选择复盘类型</span><h2>个股复盘或组合复盘</h2><p>复盘对照留档的观察计划与实际操作记录，区分不可控行情和可优化动作；不自动读取券商成交数据。</p></div><Pill tone="success">复盘教练</Pill></div><div className="mode-tabs review-tabs"><button className={reviewMode === 'stock' ? 'active' : ''} onClick={() => { setReviewMode('stock'); setReviewReportReady(false) }}><FileSearch size={16}/>个股复盘</button><button className={reviewMode === 'portfolio' ? 'active' : ''} onClick={() => { setReviewMode('portfolio'); setReviewReportReady(false) }}><PieChart size={16}/>组合复盘</button></div>{reviewMode === 'stock' && <div className="review-source"><span>复盘对象</span><strong>{reviewArchive ? getArchiveFileName(reviewArchive) : '未从留档选择，使用通用个股复盘'}</strong><small>建议从留档卡片点击“开始复盘”，可自动带入原观察计划。</small></div>}{reviewMode === 'portfolio' && <div className="review-source"><span>复盘对象</span><strong>{portfolioItems.length} 只组合名单</strong><small>{portfolioItems.length ? portfolioItems.map((item) => item.name).join('、') : '可先在组合体检中添加股票'}</small></div>}<label htmlFor="review-operation">实际操作过程</label><textarea id="review-operation" value={reviewOperation} onChange={(event) => { setReviewOperation(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><label htmlFor="review-reason">当时判断或心理原因</label><textarea id="review-reason" className="review-small-textarea" value={reviewReason} onChange={(event) => { setReviewReason(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><div className="review-result-row"><div><label>最终结果</label><select value={reviewResult} onChange={(event) => setReviewResult(event.target.value as '盈利' | '亏损' | '持平')}><option>盈利</option><option>亏损</option><option>持平</option></select></div><div><label htmlFor="review-pnl">盈亏幅度</label><input id="review-pnl" value={reviewPnl} onChange={(event) => setReviewPnl(event.target.value)} placeholder="例如 -3.6%"/></div></div><label htmlFor="review-question">想复盘的问题，可选</label><input id="review-question" value={reviewQuestion} onChange={(event) => setReviewQuestion(event.target.value)} placeholder="例如：这是行情问题还是纪律问题？"/>{reviewError && <div className="error"><AlertTriangle size={16}/><span>{reviewError}</span></div>}<button className="btn primary full" onClick={runReview}><ClipboardCheck size={16}/>生成复盘报告</button></section><aside className="panel review-history"><div className="section-head"><div><span className="section-no">历史复盘</span><h2>最近记录</h2><p>按月收纳、可收起；支持收藏置顶、重命名与删除。</p></div></div>{reviewRecords.length === 0 ? <div className="portfolio-empty"><ClipboardCheck size={28}/><h3>暂无复盘记录</h3><p>生成一次复盘后会保存在当前浏览器。</p></div> : <div className="review-records">{reviewGroups.pinned.length > 0 && <section className="review-group pinned"><div className="review-group-head"><Star size={13}/><strong>收藏置顶</strong><span>{reviewGroups.pinned.length} 条</span></div><div className="review-group-body">{reviewGroups.pinned.map(reviewRecordCard)}</div></section>}{reviewGroups.months.map(({ month, records, dates }) => { const collapsed = collapsedMonths[month]; return <section className="review-group" key={month}><button className="review-group-head" onClick={() => toggleMonth(month)} aria-expanded={!collapsed}><ChevronRight size={14} className={collapsed ? '' : 'rotate'}/><strong>{monthLabel(month)}</strong><span>{records.length} 条</span></button>{!collapsed && <div className="review-group-body">{dates.map(([date, items]) => <div className="review-date-block" key={date}><div className="review-date-label">{dateLabel(date)}</div>{items.map(reviewRecordCard)}</div>)}</div>}</section>})}</div>}</aside></div>
-        {reviewReportReady && <section id="review-report" className="review-report block"><div className="section-head"><div><span className="section-no">02 / 复盘报告</span><h2>{reviewAnalysis.targetName} · 结论</h2></div><Pill tone={reviewResult === '亏损' ? 'warning' : 'success'}>{reviewResult} {reviewPnl}</Pill></div><div className="review-conclusion"><h3>核心结论</h3><p>{reviewAnalysis.conclusion}</p></div><div className="review-grid review-insight-grid"><section className="report-card review-insight good"><h3><CheckCircle2 size={22}/>做得好的地方</h3><ul>{reviewAnalysis.positives.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight bad"><h3><AlertTriangle size={22}/>做得不好的地方</h3><ul>{reviewAnalysis.issues.map((item) => <li key={item}>{item}</li>)}</ul></section></div><div className="review-grid review-insight-grid"><section className="report-card review-insight unavoidable"><h3><ShieldQuestion size={22}/>无法提前控制</h3><ul>{reviewAnalysis.unavoidable.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight action"><h3><Target size={22}/>下次怎么做</h3><ul>{reviewAnalysis.nextActions.map((item) => <li key={item}>{item}</li>)}</ul></section></div><section className="report-card review-compare"><h3><FileText size={18}/>计划 vs 实际</h3><div className="compare-table">{reviewAnalysis.comparisons.map(([step, plan, actual, judgement]) => <div className="compare-row" key={step}><strong>{step}</strong><span>{plan}</span><span>{actual}</span><b className={judgement === '不可控' ? 'neutral' : 'warn'}>{judgement}</b></div>)}</div></section></section>}
+        <div className="review-layout"><section className="panel review-input-panel"><div className="section-head"><div><span className="section-no">01 / 选择复盘类型</span><h2>个股复盘或组合复盘</h2><p>复盘对照留档的观察计划与实际操作记录，区分不可控行情和可优化动作；不自动读取券商成交数据。</p></div><Pill tone="success">复盘教练</Pill></div><div className="mode-tabs review-tabs"><button className={reviewMode === 'stock' ? 'active' : ''} onClick={() => { setReviewMode('stock'); setReviewReportReady(false) }}><FileSearch size={16}/>个股复盘</button><button className={reviewMode === 'portfolio' ? 'active' : ''} onClick={() => { setReviewMode('portfolio'); setReviewReportReady(false) }}><PieChart size={16}/>组合复盘</button></div>{reviewMode === 'stock' && <div className="review-source"><span>复盘对象</span><strong>{reviewArchive ? getArchiveFileName(reviewArchive) : '未从留档选择，使用通用个股复盘'}</strong><small>建议从留档卡片点击“开始复盘”，可自动带入原观察计划。</small></div>}{reviewMode === 'portfolio' && <div className="review-source"><span>复盘对象</span><strong>{portfolioItems.length} 只组合名单</strong><small>{portfolioItems.length ? portfolioItems.map((item) => item.name).join('、') : '可先在组合体检中添加股票'}</small></div>}<label htmlFor="review-operation">实际操作过程</label><textarea id="review-operation" value={reviewOperation} onChange={(event) => { setReviewOperation(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><label htmlFor="review-reason">当时判断或心理原因</label><textarea id="review-reason" className="review-small-textarea" value={reviewReason} onChange={(event) => { setReviewReason(event.target.value); setReviewError('') }} aria-invalid={Boolean(reviewError)}/><div className="review-result-row"><div><label>最终结果</label><select value={reviewResult} onChange={(event) => setReviewResult(event.target.value as '盈利' | '亏损' | '持平')}><option>盈利</option><option>亏损</option><option>持平</option></select></div><div><label htmlFor="review-pnl">盈亏幅度</label><input id="review-pnl" value={reviewPnl} onChange={(event) => setReviewPnl(event.target.value)} placeholder="例如 -3.6%"/></div></div><label htmlFor="review-question">想复盘的问题，可选</label><input id="review-question" value={reviewQuestion} onChange={(event) => setReviewQuestion(event.target.value)} placeholder="例如：这是行情问题还是纪律问题？"/>{reviewError && <div className="error"><AlertTriangle size={16}/><span>{reviewError}</span></div>}<button className="btn primary full" disabled={reviewLoading} onClick={runReview}>{reviewLoading ? <><RefreshCw className="spin" size={16}/>AI 复盘生成中…</> : <><ClipboardCheck size={16}/>生成复盘报告</>}</button></section><aside className="panel review-history"><div className="section-head"><div><span className="section-no">历史复盘</span><h2>最近记录</h2><p>按月收纳、可收起；支持收藏置顶、重命名与删除。</p></div></div>{reviewRecords.length === 0 ? <div className="portfolio-empty"><ClipboardCheck size={28}/><h3>暂无复盘记录</h3><p>生成一次复盘后会保存在当前浏览器。</p></div> : <div className="review-records">{reviewGroups.pinned.length > 0 && <section className="review-group pinned"><div className="review-group-head"><Star size={13}/><strong>收藏置顶</strong><span>{reviewGroups.pinned.length} 条</span></div><div className="review-group-body">{reviewGroups.pinned.map(reviewRecordCard)}</div></section>}{reviewGroups.months.map(({ month, records, dates }) => { const collapsed = collapsedMonths[month]; return <section className="review-group" key={month}><button className="review-group-head" onClick={() => toggleMonth(month)} aria-expanded={!collapsed}><ChevronRight size={14} className={collapsed ? '' : 'rotate'}/><strong>{monthLabel(month)}</strong><span>{records.length} 条</span></button>{!collapsed && <div className="review-group-body">{dates.map(([date, items]) => <div className="review-date-block" key={date}><div className="review-date-label">{dateLabel(date)}</div>{items.map(reviewRecordCard)}</div>)}</div>}</section>})}</div>}</aside></div>
+        {reviewReportReady && <section id="review-report" className="review-report block"><div className="section-head"><div><span className="section-no">02 / 复盘报告</span><h2>{reviewAnalysis.targetName} · 结论</h2></div><Pill tone={reviewResult === '亏损' ? 'warning' : 'success'}>{reviewResult} {reviewPnl}</Pill></div><div className="review-conclusion"><h3>核心结论</h3><p>{reviewAnalysis.conclusion}</p></div><div className="review-grid review-insight-grid"><section className="report-card review-insight good"><h3><CheckCircle2 size={22}/>做得好的地方</h3><ul>{reviewAnalysis.positives.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight bad"><h3><AlertTriangle size={22}/>做得不好的地方</h3><ul>{reviewAnalysis.issues.map((item) => <li key={item}>{item}</li>)}</ul></section></div><div className="review-grid review-insight-grid"><section className="report-card review-insight unavoidable"><h3><ShieldQuestion size={22}/>无法提前控制</h3><ul>{reviewAnalysis.unavoidable.map((item) => <li key={item}>{item}</li>)}</ul></section><section className="report-card review-insight action"><h3><Target size={22}/>下次怎么做</h3><ul>{reviewAnalysis.nextActions.map((item) => <li key={item}>{item}</li>)}</ul></section></div><section className="report-card review-compare"><h3><FileText size={18}/>计划 vs 实际</h3><div className="compare-table">{reviewAnalysis.comparisons.map(([step, plan, actual, judgement]) => <div className="compare-row" key={step}><strong>{step}</strong><span>{plan}</span><span>{actual}</span><b className={judgement === '不可控' ? 'neutral' : 'warn'}>{judgement}</b></div>)}</div></section><p className="report-note review-market-note">{reviewAnalysis.marketNote}</p></section>}
       </section> : <section className="archive-page">
         <div className="archive-hero"><div><h1>留档</h1></div><div className="archive-count"><strong>{archives.length}</strong><span>份留档</span></div></div>
         <div className="archive-toolbar"><div><h2>全部留档</h2><p>按最近更新时间排序</p></div><button className="btn primary" onClick={showAssistant}><BrainCircuit size={15}/>开始新的分析</button></div>
