@@ -7,6 +7,7 @@ import { join, extname, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { gzipSync } from 'node:zlib'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -261,6 +262,9 @@ async function handleResolve(req, res) {
   return json(res, 404, { error: `未能识别「${input.trim()}」对应的股票。请直接输入 6 位代码（如 688017）重试，或换个更常见的名称。` })
 }
 
+const COMPRESSIBLE = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt'])
+const staticCache = new Map()
+
 function serveStatic(req, res) {
   // 站点 base 为 /finance-penguin/：按该前缀提供静态资源
   const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
@@ -271,8 +275,27 @@ function serveStatic(req, res) {
   if (!filePath.startsWith(DIST)) filePath = join(DIST, 'index.html')
   if (!existsSync(filePath) || statSync(filePath).isDirectory()) filePath = join(DIST, 'index.html')
   const ext = extname(filePath).toLowerCase()
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' })
-  res.end(readFileSync(filePath))
+  // 内存缓存 + gzip：哈希资源可长期缓存，重复访问几乎零网络传输
+  const mtime = statSync(filePath).mtimeMs
+  let entry = staticCache.get(filePath)
+  if (!entry || entry.mtime !== mtime) {
+    const body = readFileSync(filePath)
+    const gz = COMPRESSIBLE.has(ext) ? gzipSync(body, { level: 6 }) : null
+    entry = { mtime, body, gz }
+    if (staticCache.size > 100) staticCache.clear()
+    staticCache.set(filePath, entry)
+  }
+  const acceptGzip = String(req.headers['accept-encoding'] || '').includes('gzip')
+  const useGz = Boolean(entry.gz) && acceptGzip && entry.gz.length < entry.body.length
+  const cacheControl = clean.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache'
+  const headers = {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Cache-Control': cacheControl,
+    'Content-Length': useGz ? entry.gz.length : entry.body.length,
+  }
+  if (useGz) headers['Content-Encoding'] = 'gzip'
+  res.writeHead(200, headers)
+  res.end(useGz ? entry.gz : entry.body)
 }
 
 const server = http.createServer((req, res) => {
